@@ -336,7 +336,8 @@ class PDDAgent:
                 QAChain,
                 TableSuggestionChain,
                 TableGenerationChain,
-                ValueSuggestionChain
+                ValueSuggestionChain,
+                MethodologyRecommendationChain
             )
             
             # Get API keys
@@ -358,7 +359,8 @@ class PDDAgent:
                         'qa': QAChain(self.langchain_service),
                         'table_suggestion': TableSuggestionChain(self.langchain_service),
                         'table_generation': TableGenerationChain(self.langchain_service),
-                        'value_suggestion': ValueSuggestionChain(self.langchain_service)
+                        'value_suggestion': ValueSuggestionChain(self.langchain_service),
+                        'methodology_recommendation': MethodologyRecommendationChain(self.langchain_service)
                     }
                     print("✅ LangChain service initialized with Gemini/Claude")
         except ImportError as e:
@@ -483,15 +485,44 @@ class PDDAgent:
         return sorted(results, key=lambda x: x["score"], reverse=True)
     
     def suggest_methodology(self, project_description: str) -> List[Dict]:
-        """Suggest methodologies based on project description using enhanced recommendation system"""
-        # Use enhanced recommender if available
+        """Suggest methodologies based on project description using LangChain, enhanced recommender, or keyword matching"""
+        # Priority 1: Use LangChain methodology recommendation chain if available
+        if self.use_langchain and 'methodology_recommendation' in self.langchain_chains:
+            try:
+                analysis_result = self.langchain_chains['methodology_recommendation'].analyze_project(
+                    project_description=project_description,
+                    methodology_database=METHODOLOGY_DATABASE
+                )
+                
+                # Convert LangChain result to expected format
+                if isinstance(analysis_result, dict) and 'recommendations' in analysis_result:
+                    suggestions = []
+                    for rec in analysis_result['recommendations']:
+                        methodology_id = rec.get('methodology_id', '')
+                        if methodology_id in METHODOLOGY_DATABASE:
+                            m = METHODOLOGY_DATABASE[methodology_id]
+                            suggestions.append({
+                                "id": m["id"],
+                                "title": m["title"],
+                                "category": m["category"],
+                                "match_reason": ", ".join(rec.get('match_reasons', [])),
+                                "applicability": m["applicability"],
+                                "confidence": rec.get('confidence', 0),
+                                "score": rec.get('applicability_score', 0.0)
+                            })
+                    if suggestions:
+                        return sorted(suggestions, key=lambda x: x.get('score', x.get('confidence', 0)), reverse=True)
+            except Exception as e:
+                print(f"⚠️ LangChain methodology recommendation failed: {e}. Falling back to enhanced recommender.")
+        
+        # Priority 2: Use enhanced recommender if available
         if self.recommender is not None:
             try:
                 return self.recommender.suggest_methodology_simple(project_description)
             except Exception as e:
                 print(f"Enhanced recommender error: {e}, falling back to keyword matching")
         
-        # Fallback to keyword matching if enhanced recommender unavailable
+        # Priority 3: Fallback to keyword matching if enhanced recommender unavailable
         desc_lower = project_description.lower()
         suggestions = []
         
