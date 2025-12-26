@@ -50,7 +50,12 @@ env/
 
 # Large DOCX files (generated outputs - exclude from repo)
 *.docx
-!verra_rag/demo_output/*.md
+!demo_output/*.md
+
+# Excel files (generated templates and test data - exclude from repo)
+*.xlsx
+!COMPREHENSIVE_PDD_Template_*.xlsx
+!SYNTHETIC_TEST_DATA_*.xlsx
 
 # OS
 .DS_Store
@@ -87,4 +92,8 @@ htmlcov/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Documentation files (markdown)
+*.md
+!README.md
 

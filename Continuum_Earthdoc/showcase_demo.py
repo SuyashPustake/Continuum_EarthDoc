@@ -576,7 +576,7 @@ def showcase_features(agent):
         print("  ✓ AI-powered content enhancement")
         print("  ✓ AI-generated suggestions")
     else:
-        print("  ⚠ AI features available (set OPENAI_API_KEY to enable)")
+        print("  ⚠ AI features available (set GOOGLE_API_KEY to enable)")
     
     print("\n📋 Methodology Support:")
     from agents.pdd_agent import METHODOLOGY_CATEGORIES
@@ -601,13 +601,13 @@ def main():
     print("  INITIALIZING SYSTEM")
     print("=" * 80)
     
-    api_key = os.environ.get('OPENAI_API_KEY')
-    agent = PDDAgent(openai_api_key=api_key)
+    api_key = os.environ.get('GOOGLE_API_KEY')
+    agent = PDDAgent(gemini_api_key=api_key)
     
     if agent.ai_enabled:
         print("✓ AI features ENABLED")
     else:
-        print("⚠ AI features DISABLED (set OPENAI_API_KEY to enable)")
+        print("⚠ AI features DISABLED (set GOOGLE_API_KEY to enable)")
     
     # Step 1: Methodology Selection
     if not showcase_methodology_selection(agent):

@@ -336,13 +336,13 @@ def main():
     
     # Initialize agent
     print("\n>>> Initializing PDDAgent...")
-    api_key = os.environ.get('OPENAI_API_KEY')
-    agent = PDDAgent(openai_api_key=api_key)
+    api_key = os.environ.get('GOOGLE_API_KEY')
+    agent = PDDAgent(gemini_api_key=api_key)
     
     if agent.ai_enabled:
         print("✓ AI features enabled")
     else:
-        print("⚠ AI features disabled (no OPENAI_API_KEY)")
+        print("⚠ AI features disabled (no GOOGLE_API_KEY)")
     
     # Select methodology
     print("\n>>> Selecting methodology VM0038 (EV Charging)...")

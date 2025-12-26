@@ -390,8 +390,8 @@ def main():
     
     # Initialize agent
     print("\n>>> Initializing PDD Generator...")
-    api_key = os.environ.get('OPENAI_API_KEY')
-    agent = PDDAgent(openai_api_key=api_key)
+    api_key = os.environ.get('GOOGLE_API_KEY')
+    agent = PDDAgent(gemini_api_key=api_key)
     
     # Select methodology
     methodology = extracted_info.get('methodology', 'VM0038')

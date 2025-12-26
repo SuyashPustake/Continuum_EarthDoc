@@ -258,8 +258,8 @@ def main():
     print("  INITIALIZING PDD GENERATOR")
     print("=" * 80)
     
-    api_key = os.environ.get('OPENAI_API_KEY')
-    agent = PDDAgent(openai_api_key=api_key)
+    api_key = os.environ.get('GOOGLE_API_KEY')
+    agent = PDDAgent(gemini_api_key=api_key)
     
     # Select methodology (assume VM0038 based on project type)
     methodology = project_info.get('methodology', 'VM0038')

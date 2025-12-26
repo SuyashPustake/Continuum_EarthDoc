@@ -9,7 +9,7 @@ This system provides a methodology-first approach to creating VCS-compliant Proj
 ## Features
 
 - **Universal Methodology Support**: Supports 10+ Verra methodologies across all project categories
-- **AI-Powered Assistance**: Optional OpenAI integration for content generation and improvement
+- **AI-Powered Assistance**: Google Gemini integration for content generation and improvement
 - **Interactive Document Creation**: Step-by-step guided workflow
 - **Professional Output**: Generates DOCX documents following VCS templates
 - **Methodology Suggestions**: Smart matching based on project description
@@ -33,8 +33,8 @@ This system provides a methodology-first approach to creating VCS-compliant Proj
 
 ```bash
 # Clone repository
-git clone <repository-url>
-cd verra_rag
+git clone https://github.com/SuyashPustake/Continuum_EarthDoc.git
+cd Continuum_EarthDoc/Continuum_Earthdoc
 
 # Create virtual environment (recommended)
 python -m venv venv
@@ -48,9 +48,22 @@ pip install -r requirements.txt
 
 ### Environment Variables
 
+Create a `.env` file in the `Continuum_Earthdoc` directory:
+
+```bash
+# Required for AI assistance features
+GOOGLE_API_KEY=your-google-api-key-here
+
+# Optional - For Claude fallback (if using LangChain)
+ANTHROPIC_API_KEY=your-anthropic-api-key-here
+```
+
+Or set environment variables:
+
 ```bash
 # Optional - Enable AI assistance features
-export OPENAI_API_KEY="your-api-key"
+export GOOGLE_API_KEY="your-api-key"
+export ANTHROPIC_API_KEY="your-claude-api-key"  # Optional
 ```
 
 ## Usage
@@ -82,24 +95,34 @@ Access the application at `http://localhost:8501`
 ## Project Structure
 
 ```
-verra_rag/
-├── app.py                 # Main Streamlit application
+Continuum_Earthdoc/
+├── app.py                              # Main Streamlit application
 ├── agents/
-│   └── pdd_agent.py       # Core PDD generation agent
+│   ├── pdd_agent.py                    # Core PDD generation agent
+│   ├── methodology_recommender.py      # AI-powered methodology suggestions
+│   └── langchain_chains.py             # LangChain orchestration
 ├── knowledge/
 │   ├── comprehensive_methodology_knowledge.py
+│   ├── methodology_templates.py        # Methodology-specific section templates
 │   └── verra_standards_knowledge.py
 ├── models/
 │   ├── project.py
 │   ├── methodology.py
 │   └── evidence.py
+├── utils/
+│   ├── docx_converter.py                # Markdown to DOCX converter
+│   ├── excel_handler.py                 # Excel template generation and parsing
+│   ├── langchain_service.py             # LangChain service wrapper
+│   ├── context_builder.py               # Context building for LLM prompts
+│   └── prompt_templates.py              # Standardized prompt templates
 ├── requirements.txt
+├── .env.example                         # Environment variables template
 └── README.md
 ```
 
 ## AI Features
 
-When `OPENAI_API_KEY` is set, the following features are available:
+When `GOOGLE_API_KEY` is set, the following features are available:
 
 - **Generate Complete Draft**: AI writes professional content for any section
 - **Suggest Parameter Values**: Get typical values with sources

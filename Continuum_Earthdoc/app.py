@@ -9,6 +9,13 @@ import os
 from datetime import datetime
 from io import BytesIO
 
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv is optional
+
 from agents.pdd_agent import PDDAgent, METHODOLOGY_DATABASE, METHODOLOGY_CATEGORIES
 
 # Page config
@@ -25,8 +32,8 @@ st.set_page_config(
 def init_session():
     """Initialize session state"""
     if 'agent' not in st.session_state:
-        api_key = os.environ.get('OPENAI_API_KEY')
-        st.session_state.agent = PDDAgent(openai_api_key=api_key)
+        api_key = os.environ.get('GOOGLE_API_KEY')
+        st.session_state.agent = PDDAgent(gemini_api_key=api_key)
     
     if 'view' not in st.session_state:
         st.session_state.view = 'methodology_select'
@@ -85,7 +92,17 @@ def render_methodology_selection():
             with col1:
                 with st.container():
                     st.markdown(f"**{s['id']}: {s['title']}**")
-                    st.caption(f"{s['category']} - {s['match_reason']}")
+                    # Show confidence score if available
+                    if 'confidence' in s:
+                        confidence_pct = int(s['confidence'] * 100)
+                        st.caption(f"{s['category']} - {s['match_reason']} | Confidence: {confidence_pct}%")
+                    else:
+                        st.caption(f"{s['category']} - {s['match_reason']}")
+                    
+                    # Show detailed analysis if available
+                    if 'detailed_analysis' in s and s['detailed_analysis']:
+                        with st.expander("View Detailed Analysis"):
+                            st.markdown(s['detailed_analysis'])
             with col2:
                 if st.button("Select", key=f"sug_{s['id']}", type="primary", use_container_width=True):
                     select_methodology(s['id'])
@@ -173,7 +190,7 @@ def render_sidebar():
                 st.rerun()
             
             if st.button("Change Methodology", use_container_width=True):
-                st.session_state.agent = PDDAgent(openai_api_key=os.environ.get('OPENAI_API_KEY'))
+                st.session_state.agent = PDDAgent(gemini_api_key=os.environ.get('GOOGLE_API_KEY'))
                 st.session_state.view = 'methodology_select'
                 st.rerun()
         
@@ -186,13 +203,109 @@ def render_document_creation():
     agent = st.session_state.agent
     m = agent.methodology_data
     
+    # Excel Import Section
+    with st.expander("📊 Import Data from Excel Template", expanded=False):
+        st.markdown("### Bulk Data Import via Excel")
+        st.info("Download the Excel template, fill in all your project data, and upload it to automatically populate all sections.")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Generate and download template
+            if st.button("📥 Download Excel Template", type="primary", use_container_width=True):
+                try:
+                    from utils.excel_handler import ExcelTemplateGenerator
+                    template = ExcelTemplateGenerator.generate_template(agent)
+                    
+                    project_name = agent.project_data.get('project_name', 'Project')[:30].replace(' ', '_')
+                    filename = f"PDD_Template_{m['id']}_{project_name}.xlsx"
+                    
+                    st.download_button(
+                        "⬇️ Click to Download",
+                        template,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_template"
+                    )
+                    st.success("Template generated! Click the download button above.")
+                except Exception as e:
+                    st.error(f"Error generating template: {str(e)}")
+        
+        with col2:
+            # Upload Excel file
+            uploaded_file = st.file_uploader(
+                "Upload Filled Excel Template",
+                type=['xlsx', 'xls'],
+                help="Upload your filled Excel template to import all data at once"
+            )
+            
+            if uploaded_file is not None:
+                if st.button("📤 Import Data from Excel", type="primary", use_container_width=True):
+                    try:
+                        from utils.excel_handler import ExcelDataParser
+                        import io
+                        
+                        # Read uploaded file
+                        file_content = io.BytesIO(uploaded_file.read())
+                        
+                        # Parse Excel
+                        with st.spinner("Parsing Excel file..."):
+                            parsed_data = ExcelDataParser.parse_excel(file_content, agent)
+                        
+                        if not parsed_data.get('success'):
+                            st.error(f"Error parsing Excel: {parsed_data.get('error', 'Unknown error')}")
+                        else:
+                            # Validate data
+                            validation = ExcelDataParser.validate_excel_data(parsed_data, agent)
+                            
+                            if not validation['valid']:
+                                st.error("Validation Errors:")
+                                for error in validation['errors']:
+                                    st.error(f"  - {error}")
+                            
+                            if validation['warnings']:
+                                st.warning("Warnings:")
+                                for warning in validation['warnings']:
+                                    st.warning(f"  - {warning}")
+                            
+                            # Import data
+                            if validation['valid'] or st.button("Import Anyway (with warnings)", key="import_anyway"):
+                                with st.spinner("Importing data and generating content..."):
+                                    result = agent.import_from_excel(parsed_data)
+                                
+                                if result.get('success'):
+                                    st.success(f"✅ Successfully imported data!")
+                                    st.info(f"""
+                                    - Filled {result.get('filled_subsections', 0)} subsections
+                                    - Progress: {result.get('progress_percent', 0)}%
+                                    - You can now review and generate the document
+                                    """)
+                                    
+                                    # Reset view to show completion
+                                    if result.get('progress_percent', 0) >= 90:
+                                        st.balloons()
+                                        st.session_state.view = 'generate'
+                                        st.rerun()
+                                else:
+                                    st.error(f"Import failed: {result.get('error', 'Unknown error')}")
+                                    if result.get('errors'):
+                                        for error in result['errors']:
+                                            st.error(f"  - {error}")
+                    except Exception as e:
+                        st.error(f"Error processing Excel file: {str(e)}")
+                        st.exception(e)
+    
+    st.markdown("---")
+    
     # Header with AI status
     col1, col2 = st.columns([4, 1])
     with col1:
         st.header(f"{m['id']}: {m['title']}")
     with col2:
-        if agent.ai_enabled:
-            st.success("AI Enabled")
+        if agent.use_langchain:
+            st.success("🤖 AI Enabled (Gemini/Claude)")
+        elif agent.ai_enabled:
+            st.info("AI Enabled (Gemini)")
         else:
             st.warning("AI Disabled")
     
@@ -329,7 +442,7 @@ def render_document_creation():
                 st.markdown("**Response:**")
                 st.markdown(answer)
         else:
-            st.warning("**AI Features Unavailable** - Set the OPENAI_API_KEY environment variable to enable AI-powered content generation, table suggestions, and expert guidance.")
+            st.warning("**AI Features Unavailable** - Set the GOOGLE_API_KEY environment variable to enable AI-powered content generation, table suggestions, and expert guidance.")
     
     # Example
     if current.get('example'):
@@ -474,7 +587,7 @@ def render_document_creation():
                 suggestion = agent.ai_generate_suggestion(current['subsection'])
             st.session_state.draft_content = suggestion
         else:
-            st.warning("AI features require OPENAI_API_KEY environment variable to be set.")
+            st.warning("AI features require GOOGLE_API_KEY environment variable to be set.")
         st.rerun()
     
     if skip:
@@ -510,7 +623,7 @@ def render_document_creation():
                     st.session_state.draft_content = improved
                     st.rerun()
                 else:
-                    st.warning("AI features require OPENAI_API_KEY")
+                    st.warning("AI features require GOOGLE_API_KEY")
         with col3:
             if st.button("Regenerate Draft", use_container_width=True):
                 draft = agent.generate_subsection_draft()
@@ -554,49 +667,50 @@ def render_document_generation():
         st.markdown("### Download Document")
         
         try:
+            from utils.docx_converter import markdown_to_docx
             from docx import Document
-            from docx.shared import Pt
-            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            import tempfile
+            import os
             
-            doc = Document()
+            # Use professional markdown to docx converter
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
+                tmp_path = tmp_file.name
             
-            # Process content
-            lines = st.session_state.generated_document.split('\n')
+            try:
+                # Convert markdown to properly formatted DOCX
+                markdown_to_docx(st.session_state.generated_document, tmp_path)
+                
+                # Read the generated file
+                with open(tmp_path, 'rb') as f:
+                    buffer = BytesIO(f.read())
+                
+                buffer.seek(0)
+                
+                project_name = agent.project_data.get('project_name', 'Project')[:25].replace(' ', '_')
+                filename = f"VCS_PDD_{m['id']}_{project_name}_{datetime.now().strftime('%Y%m%d')}.docx"
+                
+                st.download_button(
+                    "Download DOCX Document",
+                    buffer,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    type="primary"
+                )
+                
+                st.info("Document generated in Microsoft Word format (.docx) with proper formatting. Compatible with Microsoft Word, Google Docs, and LibreOffice Writer.")
+                
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
             
-            for line in lines:
-                if line.startswith('# ') and 'TABLE OF CONTENTS' not in line:
-                    doc.add_heading(line[2:].strip(), level=0)
-                elif line.startswith('## '):
-                    doc.add_heading(line[3:].strip(), level=1)
-                elif line.startswith('### '):
-                    doc.add_heading(line[4:].strip(), level=2)
-                elif line.startswith('| ') and '---' not in line:
-                    doc.add_paragraph(line)
-                elif line.strip().startswith('- '):
-                    doc.add_paragraph(line.strip()[2:], style='List Bullet')
-                elif line.strip():
-                    doc.add_paragraph(line.strip())
-            
-            buffer = BytesIO()
-            doc.save(buffer)
-            buffer.seek(0)
-            
-            project_name = agent.project_data.get('project_name', 'Project')[:25].replace(' ', '_')
-            filename = f"VCS_PDD_{m['id']}_{project_name}_{datetime.now().strftime('%Y%m%d')}.docx"
-            
-            st.download_button(
-                "Download DOCX Document",
-                buffer,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-                type="primary"
-            )
-            
-            st.info("Document generated in Microsoft Word format (.docx). Compatible with Microsoft Word, Google Docs, and LibreOffice Writer.")
-            
-        except ImportError:
-            st.error("Document generation requires python-docx package. Please contact support.")
+        except ImportError as e:
+            st.error(f"Document generation requires python-docx package. Error: {e}")
+        except Exception as e:
+            st.error(f"Error generating document: {e}")
+            import traceback
+            st.code(traceback.format_exc())
         
         # Additional exports
         with st.expander("Additional Export Formats"):

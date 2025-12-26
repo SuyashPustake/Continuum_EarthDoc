@@ -9,12 +9,21 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 
-# OpenAI integration
+# Gemini integration
 try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
 except ImportError:
-    OPENAI_AVAILABLE = False
+    GEMINI_AVAILABLE = False
+
+# Import enhanced recommendation system and methodology templates
+try:
+    from agents.methodology_recommender import EnhancedMethodologyRecommender
+    from knowledge.methodology_templates import get_methodology_template, get_all_methodology_ids
+    ENHANCED_RECOMMENDER_AVAILABLE = True
+except ImportError:
+    ENHANCED_RECOMMENDER_AVAILABLE = False
+    EnhancedMethodologyRecommender = None
 
 
 @dataclass
@@ -301,15 +310,74 @@ class PDDAgent:
     Methodology-first design that adapts to ANY Verra methodology
     """
     
-    def __init__(self, openai_api_key: Optional[str] = None):
+    def __init__(self, gemini_api_key: Optional[str] = None):
         """Initialize the agent"""
-        self.api_key = openai_api_key or os.environ.get('OPENAI_API_KEY')
-        self.ai_enabled = OPENAI_AVAILABLE and self.api_key is not None
+        self.api_key = gemini_api_key or os.environ.get('GOOGLE_API_KEY')
+        self.ai_enabled = GEMINI_AVAILABLE and self.api_key is not None
         
         if self.ai_enabled:
-            self.client = OpenAI(api_key=self.api_key)
+            genai.configure(api_key=self.api_key)
+            self.client = genai
+            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
         else:
             self.client = None
+            self.model = None
+        
+        # Initialize LangChain service (preferred)
+        self.langchain_service = None
+        self.langchain_chains = {}
+        self.use_langchain = False
+        
+        try:
+            from utils.langchain_service import LangChainService
+            from agents.langchain_chains import (
+                ContentGenerationChain,
+                TextImprovementChain,
+                QAChain,
+                TableSuggestionChain,
+                TableGenerationChain,
+                ValueSuggestionChain
+            )
+            
+            # Get API keys
+            gemini_key = os.environ.get('GOOGLE_API_KEY')
+            claude_key = os.environ.get('ANTHROPIC_API_KEY')
+            
+            if gemini_key or claude_key:
+                self.langchain_service = LangChainService(
+                    gemini_api_key=gemini_key,
+                    claude_api_key=claude_key
+                )
+                
+                if self.langchain_service.is_available():
+                    self.use_langchain = True
+                    # Initialize chains
+                    self.langchain_chains = {
+                        'content': ContentGenerationChain(self.langchain_service),
+                        'improvement': TextImprovementChain(self.langchain_service),
+                        'qa': QAChain(self.langchain_service),
+                        'table_suggestion': TableSuggestionChain(self.langchain_service),
+                        'table_generation': TableGenerationChain(self.langchain_service),
+                        'value_suggestion': ValueSuggestionChain(self.langchain_service)
+                    }
+                    print("✅ LangChain service initialized with Gemini/Claude")
+        except ImportError as e:
+            print(f"⚠️ LangChain not available: {e}. Using Gemini directly.")
+        except Exception as e:
+            print(f"⚠️ Error initializing LangChain: {e}. Using Gemini directly.")
+        
+        # Initialize enhanced methodology recommender
+        if ENHANCED_RECOMMENDER_AVAILABLE and self.ai_enabled:
+            try:
+                self.recommender = EnhancedMethodologyRecommender(
+                    gemini_api_key=self.api_key,
+                    methodology_database=METHODOLOGY_DATABASE
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize enhanced recommender: {e}")
+                self.recommender = None
+        else:
+            self.recommender = None
         
         # State
         self.selected_methodology = None
@@ -321,6 +389,52 @@ class PDDAgent:
         self.conversation_history = []
         self.draft_content = ""
         self.media_attachments = {}  # Store images, tables, plots by subsection
+    
+    def _gemini_chat(self, system_prompt: str, user_prompt: str, max_tokens: int = 2000, temperature: float = 0.3) -> str:
+        """Helper method for Gemini chat completions"""
+        if not self.ai_enabled or not self.model:
+            raise ValueError("Gemini not available")
+        
+        try:
+            # Combine system and user prompts for Gemini
+            full_prompt = f"{system_prompt}\n\n{user_prompt}"
+            response = self.model.generate_content(
+                full_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=temperature
+                )
+            )
+            return response.text
+        except Exception as e:
+            raise Exception(f"Gemini API error: {str(e)}")
+    
+    def _gemini_chat_json(self, system_prompt: str, user_prompt: str, max_tokens: int = 2000, temperature: float = 0.3) -> Dict:
+        """Helper method for Gemini chat that returns JSON"""
+        if not self.ai_enabled or not self.model:
+            raise ValueError("Gemini not available")
+        
+        try:
+            full_prompt = f"{system_prompt}\n\n{user_prompt}\n\nReturn ONLY valid JSON, no other text."
+            response = self.model.generate_content(
+                full_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=temperature
+                )
+            )
+            # Try to extract JSON from response
+            text = response.text.strip()
+            # Remove markdown code blocks if present
+            if '```json' in text:
+                text = text.split('```json')[1].split('```')[0].strip()
+            elif '```' in text:
+                text = text.split('```')[1].split('```')[0].strip()
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {"error": "Failed to parse JSON response", "raw": response.text}
+        except Exception as e:
+            raise Exception(f"Gemini API error: {str(e)}")
     
     # =========================================================================
     # METHODOLOGY SELECTION
@@ -369,7 +483,15 @@ class PDDAgent:
         return sorted(results, key=lambda x: x["score"], reverse=True)
     
     def suggest_methodology(self, project_description: str) -> List[Dict]:
-        """Suggest methodologies based on project description"""
+        """Suggest methodologies based on project description using enhanced recommendation system"""
+        # Use enhanced recommender if available
+        if self.recommender is not None:
+            try:
+                return self.recommender.suggest_methodology_simple(project_description)
+            except Exception as e:
+                print(f"Enhanced recommender error: {e}, falling back to keyword matching")
+        
+        # Fallback to keyword matching if enhanced recommender unavailable
         desc_lower = project_description.lower()
         suggestions = []
         
@@ -439,8 +561,26 @@ class PDDAgent:
     # =========================================================================
     
     def _build_sections_for_methodology(self) -> List[PDDSection]:
-        """Build PDD sections tailored to selected methodology"""
+        """Build PDD sections tailored to selected methodology using methodology-specific templates"""
         m = self.methodology_data
+        methodology_id = m["id"]
+        
+        # Try to get methodology-specific template
+        if ENHANCED_RECOMMENDER_AVAILABLE:
+            template = get_methodology_template(methodology_id)
+            if template:
+                # Use methodology-specific template
+                sections = []
+                for section_data in template["sections"]:
+                    sections.append(PDDSection(
+                        number=section_data["number"],
+                        title=section_data["title"],
+                        subsections=section_data["subsections"],
+                        guidance=self._get_guidance_for_section(section_data["number"], methodology_id)
+                    ))
+                return sections
+        
+        # Fallback to generic template if no methodology-specific template available
         category = m["category"]
         
         # Base VCS template sections (all methodologies)
@@ -495,6 +635,18 @@ class PDDAgent:
             ))
         
         return sections
+    
+    def _get_guidance_for_section(self, section_number: str, methodology_id: str) -> str:
+        """Get guidance text for a specific section in a methodology"""
+        guidance_map = {
+            "1": "Basic project information required for all VCS projects.",
+            "2": "Demonstrate project meets VCS safeguards and stakeholder requirements.",
+            "3": f"Detailed application of methodology {methodology_id} to your project.",
+            "3A": "Non-permanence risk assessment required for carbon removal projects.",
+            "4": "Calculate emission reductions and removals using methodology formulas.",
+            "5": "Establish comprehensive monitoring plan for all required parameters."
+        }
+        return guidance_map.get(section_number, "Complete this section according to methodology requirements.")
     
     def _get_project_details_subsections(self) -> List[Dict]:
         """Standard project details subsections"""
@@ -889,17 +1041,12 @@ Return a JSON object with:
     "enrichment_suggestions": ["suggestions for adding more content"]
 }}"""
 
-                response = self.client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": "You are a VCS documentation expert analyzing user input quality."},
-                        {"role": "user", "content": prompt}
-                    ],
+                result = self._gemini_chat_json(
+                    system_prompt="You are a VCS documentation expert analyzing user input quality.",
+                    user_prompt=prompt,
                     max_tokens=1000,
                     temperature=0.3
                 )
-                
-                result = json.loads(response.choices[0].message.content)
                 return {
                     "suggestions": result.get("enrichment_suggestions", []),
                     "follow_up_questions": result.get("follow_up_questions", []),
@@ -927,27 +1074,17 @@ Return a JSON object with:
         subsection_num = current.get('subsection', '')
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are a VCS documentation expert. Based on user input, generate 3-5 specific follow-up questions that will help enrich the content for section {subsection_num}.
+            result = self._gemini_chat_json(
+                system_prompt=f"""You are a VCS documentation expert. Based on user input, generate 3-5 specific follow-up questions that will help enrich the content for section {subsection_num}.
 
 Methodology: {self.methodology_data['id']} - {self.methodology_data['title']}
 
-Return only a JSON array of questions: ["question1", "question2", ...]"""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"User input: {json.dumps(user_input, indent=2)}"
-                    }
-                ],
+Return only a JSON object with 'questions' array: {{"questions": ["question1", "question2", ...]}}""",
+                user_prompt=f"User input: {json.dumps(user_input, indent=2)}",
                 max_tokens=500,
                 temperature=0.4
             )
-            
-            questions = json.loads(response.choices[0].message.content)
+            questions = result.get('questions', [])
             return questions if isinstance(questions, list) else []
         except Exception:
             return []
@@ -964,7 +1101,7 @@ Return only a JSON array of questions: ["question1", "question2", ...]"""
         if "[Content to be provided" in content and self.ai_enabled:
             try:
                 ai_content = self.ai_generate_suggestion(subsection["num"])
-                if ai_content and "requires OPENAI_API_KEY" not in ai_content:
+                if ai_content and "requires GOOGLE_API_KEY" not in ai_content:
                     content = ai_content
                     ai_used = True
             except Exception:
@@ -1539,12 +1676,7 @@ The following parameters are monitored per {m['id']} requirements:
             return content
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are a Verra VCS carbon project documentation expert.
+            system_prompt = f"""You are a Verra VCS carbon project documentation expert.
 Enhance the following PDD section content to be more detailed and professional.
 Methodology: {self.methodology_data['id']} - {self.methodology_data['title']}
 Category: {self.methodology_data['category']}
@@ -1555,16 +1687,10 @@ Rules:
 3. Reference VCS requirements appropriately
 4. Maintain professional tone
 5. Keep numbers exactly as provided"""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Enhance this section:\n\n{content}"
-                    }
-                ],
-                max_tokens=2000,
-                temperature=0.3
-            )
-            return response.choices[0].message.content
+            
+            user_prompt = f"Enhance this section:\n\n{content}"
+            
+            return self._gemini_chat(system_prompt, user_prompt, max_tokens=2000, temperature=0.3)
         except Exception:
             return content
     
@@ -1574,23 +1700,55 @@ Rules:
     
     def ai_generate_suggestion(self, subsection_num: str, context: str = "") -> str:
         """AI generates a complete suggestion for a section based on project context"""
-        if not self.ai_enabled:
-            return "AI assistance requires OPENAI_API_KEY to be set."
+        if not self.ai_enabled and not self.use_langchain:
+            return "AI assistance requires GOOGLE_API_KEY to be set."
         
         m = self.methodology_data
-        project_context = json.dumps(self.project_data, indent=2) if self.project_data else "{}"
+        if not m:
+            return "No methodology selected."
         
-        # Comprehensive section prompts with table/figure guidance
+        # Get subsection title
+        subsection_title = ""
+        for section in self.sections:
+            for sub in section.subsections:
+                if sub['num'] == subsection_num:
+                    subsection_title = sub['title']
+                    break
+        
+        
+        # Use LangChain if available
+        if self.use_langchain and 'content' in self.langchain_chains:
+            try:
+                section_prompts = self._get_comprehensive_section_prompts()
+                task_description = section_prompts.get(
+                    subsection_num,
+                    f"Write comprehensive, audit-ready content for section {subsection_num} ({subsection_title})"
+                )
+                
+                if context:
+                    task_description += f"\n\nADDITIONAL CONTEXT: {context}"
+                
+                result = self.langchain_chains['content'].generate(
+                    methodology_data=m,
+                    subsection_num=subsection_num,
+                    subsection_title=subsection_title,
+                    project_data=self.project_data,
+                    task_description=task_description
+                )
+                return result
+            except Exception as e:
+                print(f"⚠️ LangChain generation failed: {e}. Falling back to Gemini.")
+        
+        # Fallback to direct Gemini
+        if not self.ai_enabled:
+            return "AI assistance requires GOOGLE_API_KEY to be set."
+        
+        project_context = json.dumps(self.project_data, indent=2) if self.project_data else "{}"
         section_prompts = self._get_comprehensive_section_prompts()
         specific_prompt = section_prompts.get(subsection_num, f"Write professional content for section {subsection_num}.")
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are an expert Verra VCS Project Description Document writer creating audit-ready documentation.
+            system_prompt = f"""You are an expert Verra VCS Project Description Document writer creating audit-ready documentation.
 
 METHODOLOGY: {m['id']} v{m['version']} - {m['title']}
 CATEGORY: {m['category']}
@@ -1621,19 +1779,11 @@ DOCUMENT FORMATTING REQUIREMENTS:
 6. Add numbered steps for procedures
 7. Reference specific VCS/methodology requirements with citations
 
-Write comprehensive, professional content that would pass VCS audit review.
-Use placeholders [X] for specific values not yet provided.
-Be detailed and thorough - this is for official submission."""
-                    },
-                    {
-                        "role": "user",
-                        "content": specific_prompt
-                    }
-                ],
-                max_tokens=3500,
-                temperature=0.4
-            )
-            return response.choices[0].message.content
+Write comprehensive, professional content that would pass VCS audit review."""
+
+            user_prompt = f"{specific_prompt}\n\nWrite the content for section {subsection_num} ({subsection_title})."
+            
+            return self._gemini_chat(system_prompt, user_prompt, max_tokens=4000, temperature=0.3)
         except Exception as e:
             return f"AI generation failed: {str(e)}"
     
@@ -2109,18 +2259,40 @@ Include:
     
     def ai_improve_text(self, user_text: str, subsection_num: str) -> str:
         """AI improves user-provided text"""
-        if not self.ai_enabled:
+        if not self.ai_enabled and not self.use_langchain:
             return user_text
         
         m = self.methodology_data
+        if not m:
+            return user_text
+        
+        # Get subsection title
+        subsection_title = ""
+        for section in self.sections:
+            for sub in section.subsections:
+                if sub['num'] == subsection_num:
+                    subsection_title = sub['title']
+                    break
+        
+        # Use LangChain if available
+        if self.use_langchain and 'improvement' in self.langchain_chains:
+            try:
+                result = self.langchain_chains['improvement'].improve(
+                    user_text=user_text,
+                    methodology_data=m,
+                    subsection_num=subsection_num,
+                    subsection_title=subsection_title
+                )
+                return result
+            except Exception as e:
+                print(f"⚠️ LangChain improvement failed: {e}. Falling back to Gemini.")
+        
+        # Fallback to direct Gemini
+        if not self.ai_enabled:
+            return user_text
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are a Verra VCS documentation editor.
+            system_prompt = f"""You are a Verra VCS documentation editor.
 Improve the following text for a {m['id']} Project Description Document.
 
 Tasks:
@@ -2132,33 +2304,39 @@ Tasks:
 
 Methodology: {m['id']} - {m['title']}
 Category: {m['category']}"""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Improve this text for section {subsection_num}:\n\n{user_text}"
-                    }
-                ],
-                max_tokens=2000,
-                temperature=0.3
-            )
-            return response.choices[0].message.content
+            
+            user_prompt = f"Improve this text for section {subsection_num}:\n\n{user_text}"
+            
+            return self._gemini_chat(system_prompt, user_prompt, max_tokens=2000, temperature=0.3)
         except Exception:
             return user_text
     
     def ai_answer_question(self, question: str) -> str:
         """AI answers user questions about methodology or VCS requirements"""
-        if not self.ai_enabled:
-            return "AI assistance requires OPENAI_API_KEY to be set."
+        if not self.ai_enabled and not self.use_langchain:
+            return "AI assistance requires GOOGLE_API_KEY to be set."
         
         m = self.methodology_data
+        if not m:
+            return "No methodology selected."
+        
+        # Use LangChain if available
+        if self.use_langchain and 'qa' in self.langchain_chains:
+            try:
+                result = self.langchain_chains['qa'].answer(
+                    question=question,
+                    methodology_data=m
+                )
+                return result
+            except Exception as e:
+                print(f"⚠️ LangChain Q&A failed: {e}. Falling back to Gemini.")
+        
+        # Fallback to direct Gemini
+        if not self.ai_enabled:
+            return "AI assistance requires GOOGLE_API_KEY to be set."
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are a Verra VCS expert assistant helping with {m['id']} documentation.
+            system_prompt = f"""You are a Verra VCS expert assistant helping with {m['id']} documentation.
 
 Methodology: {m['id']} v{m['version']} - {m['title']}
 Category: {m['category']}
@@ -2172,33 +2350,46 @@ Additionality Tool: {m.get('additionality_tool', 'N/A')}
 
 Provide accurate, helpful answers based on VCS requirements and the methodology.
 If you're not certain, say so. Reference specific VCS documents where helpful."""
-                    },
-                    {
-                        "role": "user",
-                        "content": question
-                    }
-                ],
-                max_tokens=1500,
-                temperature=0.3
-            )
-            return response.choices[0].message.content
+            
+            return self._gemini_chat(system_prompt, question, max_tokens=1500, temperature=0.3)
         except Exception as e:
             return f"Could not get answer: {str(e)}"
     
     def ai_suggest_tables_and_figures(self, subsection_num: str) -> Dict:
         """AI suggests specific tables and figures for a section"""
-        if not self.ai_enabled:
+        if not self.ai_enabled and not self.use_langchain:
             return {"tables": [], "figures": [], "error": "AI unavailable"}
         
         m = self.methodology_data
+        if not m:
+            return {"tables": [], "figures": [], "error": "No methodology selected"}
+        
+        # Get subsection title
+        subsection_title = ""
+        for section in self.sections:
+            for sub in section.subsections:
+                if sub['num'] == subsection_num:
+                    subsection_title = sub['title']
+                    break
+        
+        # Use LangChain if available
+        if self.use_langchain and 'table_suggestion' in self.langchain_chains:
+            try:
+                result = self.langchain_chains['table_suggestion'].suggest(
+                    methodology_data=m,
+                    subsection_num=subsection_num,
+                    subsection_title=subsection_title
+                )
+                return result
+            except Exception as e:
+                print(f"⚠️ LangChain table suggestion failed: {e}. Falling back to Gemini.")
+        
+        # Fallback to direct Gemini
+        if not self.ai_enabled:
+            return {"tables": [], "figures": [], "error": "AI unavailable"}
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are a VCS documentation expert. Suggest specific tables and figures for PDD sections.
+            system_prompt = f"""You are a VCS documentation expert. Suggest specific tables and figures for PDD sections.
 
 Methodology: {m['id']} - {m['title']}
 Category: {m['category']}
@@ -2224,17 +2415,10 @@ Provide suggestions in this JSON format:
 }}
 
 Return ONLY valid JSON, no other text."""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Suggest tables and figures for section {subsection_num}"
-                    }
-                ],
-                max_tokens=1500,
-                temperature=0.3
-            )
             
-            result = json.loads(response.choices[0].message.content)
+            user_prompt = f"Suggest tables and figures for section {subsection_num}"
+            
+            result = self._gemini_chat_json(system_prompt, user_prompt, max_tokens=1500, temperature=0.3)
             return result
         except json.JSONDecodeError:
             return {"tables": [], "figures": [], "error": "Failed to parse suggestions"}
@@ -2243,19 +2427,44 @@ Return ONLY valid JSON, no other text."""
     
     def ai_generate_table(self, table_type: str, context: str = "") -> str:
         """AI generates a specific table in markdown format"""
-        if not self.ai_enabled:
-            return "AI assistance requires OPENAI_API_KEY."
+        if not self.ai_enabled and not self.use_langchain:
+            return "AI assistance requires GOOGLE_API_KEY to be set."
         
         m = self.methodology_data
+        if not m:
+            return "No methodology selected."
+        
+        # Get current subsection info
+        subsection_num = ""
+        subsection_title = ""
+        if self.current_section < len(self.sections):
+            section = self.sections[self.current_section]
+            if self.current_subsection < len(section.subsections):
+                subsection = section.subsections[self.current_subsection]
+                subsection_num = subsection['num']
+                subsection_title = subsection['title']
+        
+        # Use LangChain if available
+        if self.use_langchain and 'table_generation' in self.langchain_chains:
+            try:
+                result = self.langchain_chains['table_generation'].generate(
+                    methodology_data=m,
+                    table_type=table_type,
+                    subsection_num=subsection_num,
+                    subsection_title=subsection_title
+                )
+                return result
+            except Exception as e:
+                print(f"⚠️ LangChain table generation failed: {e}. Falling back to Gemini.")
+        
+        # Fallback to direct Gemini
+        if not self.ai_enabled:
+            return "AI assistance requires GOOGLE_API_KEY."
+        
         project_context = json.dumps(self.project_data, indent=2) if self.project_data else "{}"
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""Generate a professional markdown table for a VCS Project Description Document.
+            system_prompt = f"""Generate a professional markdown table for a VCS Project Description Document.
 
 Methodology: {m['id']} - {m['title']}
 Project Data: {project_context}
@@ -2266,43 +2475,53 @@ Requirements:
 3. Use realistic example values where project data is not available
 4. Mark placeholders with [TBD] where specific data needed
 5. Make it audit-ready and professional"""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Generate a {table_type} table. Additional context: {context}"
-                    }
-                ],
-                max_tokens=1000,
-                temperature=0.3
-            )
-            return response.choices[0].message.content
+            
+            user_prompt = f"Generate a {table_type} table. Additional context: {context}"
+            
+            return self._gemini_chat(system_prompt, user_prompt, max_tokens=1000, temperature=0.3)
         except Exception as e:
             return f"Table generation failed: {str(e)}"
     
     def ai_suggest_values(self, parameter_key: str) -> Dict:
         """AI suggests typical values for a parameter"""
-        if not self.ai_enabled:
+        if not self.ai_enabled and not self.use_langchain:
             return {"suggestion": None, "source": "AI unavailable"}
         
         m = self.methodology_data
+        if not m:
+            return {"suggestion": None, "source": "No methodology selected"}
         
         # Find parameter info
         param_info = None
+        param_name = parameter_key
         for p in m.get('key_parameters', []):
-            if p['id'].lower() == parameter_key.lower() or p['name'].lower() in parameter_key.lower():
+            if p.get('id', '').lower() == parameter_key.lower() or p.get('name', '').lower() in parameter_key.lower():
                 param_info = p
+                param_name = p.get('name', parameter_key)
                 break
         
         if not param_info:
             param_info = {"name": parameter_key, "unit": "unknown"}
+            param_name = parameter_key
+        
+        # Use LangChain if available
+        if self.use_langchain and 'value_suggestion' in self.langchain_chains:
+            try:
+                result = self.langchain_chains['value_suggestion'].suggest(
+                    methodology_data=m,
+                    parameter_key=parameter_key,
+                    parameter_name=param_name
+                )
+                return result
+            except Exception as e:
+                print(f"⚠️ LangChain value suggestion failed: {e}. Falling back to Gemini.")
+        
+        # Fallback to direct Gemini
+        if not self.ai_enabled:
+            return {"suggestion": None, "source": "AI unavailable"}
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are a carbon project data expert.
+            system_prompt = f"""You are a carbon project data expert.
 Suggest typical values for project parameters based on methodology {m['id']} - {m['category']}.
 
 Provide:
@@ -2311,17 +2530,12 @@ Provide:
 3. Any conditions or caveats
 
 Be specific and cite sources where possible."""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"What is a typical value for '{param_info['name']}' ({param_info.get('unit', 'N/A')}) in a {m['category']} project?"
-                    }
-                ],
-                max_tokens=500,
-                temperature=0.2
-            )
+            
+            user_prompt = f"What is a typical value for '{param_info['name']}' ({param_info.get('unit', 'N/A')}) in a {m['category']} project?"
+            
+            suggestion = self._gemini_chat(system_prompt, user_prompt, max_tokens=500, temperature=0.2)
             return {
-                "suggestion": response.choices[0].message.content,
+                "suggestion": suggestion,
                 "parameter": param_info['name'],
                 "unit": param_info.get('unit')
             }
@@ -2369,6 +2583,118 @@ Be specific and cite sources where possible."""
                 markdown += f"![{att['description'] or f'Plot {i}'}](data:image/png;base64,{att['data']})\n\n"
         
         return markdown
+    
+    def import_from_excel(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Import all data from Excel and fill all sections
+        
+        Args:
+            excel_data: Dictionary with 'overview' and 'sections' keys from Excel parser
+            
+        Returns:
+            Dictionary with import results
+        """
+        if not self.selected_methodology:
+            return {
+                "success": False,
+                "error": "No methodology selected"
+            }
+        
+        errors = []
+        warnings = []
+        filled_sections = 0
+        filled_subsections = 0
+        
+        try:
+            # Step 1: Fill overview data into project_data
+            overview = excel_data.get('overview', {})
+            for key, value in overview.items():
+                if value:  # Only set non-empty values
+                    self.project_data[key] = value
+            
+            # Step 2: Fill all sections with data
+            sections_data = excel_data.get('sections', {})
+            
+            # Reset to beginning
+            self.current_section = 0
+            self.current_subsection = 0
+            
+            # Process each section
+            for section_idx, section in enumerate(self.sections):
+                self.current_section = section_idx
+                
+                for subsection_idx, subsection in enumerate(section.subsections):
+                    self.current_subsection = subsection_idx
+                    subsection_num = subsection['num']
+                    
+                    # Get current question to understand structure
+                    current = self.get_current_question()
+                    questions = current.get('questions', [])
+                    
+                    # Get data for this subsection
+                    subsection_data = sections_data.get(subsection_num, {})
+                    
+                    if not subsection_data and subsection.get('required', True):
+                        warnings.append(f"No data provided for required subsection {subsection_num}")
+                        continue
+                    
+                    # Map Excel data to question keys
+                    user_input = {}
+                    for question in questions:
+                        key = question['key']
+                        if key in subsection_data:
+                            user_input[key] = subsection_data[key]
+                        elif key in self.project_data:
+                            user_input[key] = self.project_data[key]
+                        elif 'default' in question:
+                            user_input[key] = question['default']
+                    
+                    # Process input if we have data
+                    if user_input:
+                        try:
+                            result = self.process_user_input(user_input)
+                            
+                            # Generate draft
+                            draft = self.generate_subsection_draft()
+                            
+                            # Approve with generated content
+                            self.approve_subsection(draft['content'])
+                            
+                            filled_subsections += 1
+                        except Exception as e:
+                            errors.append(f"Error processing {subsection_num}: {str(e)}")
+                            # Continue with next subsection
+                            continue
+                    else:
+                        # Skip if no data and not required
+                        if not subsection.get('required', True):
+                            # Still approve with placeholder
+                            placeholder = f"[Section {subsection_num} - {subsection['title']} - No data provided]"
+                            self.approve_subsection(placeholder)
+                            warnings.append(f"Subsection {subsection_num} filled with placeholder (not required)")
+            
+            # Calculate progress
+            total_subsections = sum(len(s.subsections) for s in self.sections)
+            progress = (filled_subsections / total_subsections * 100) if total_subsections > 0 else 0
+            
+            return {
+                "success": len(errors) == 0,
+                "filled_sections": len(self.sections),
+                "filled_subsections": filled_subsections,
+                "total_subsections": total_subsections,
+                "progress_percent": round(progress, 1),
+                "errors": errors,
+                "warnings": warnings,
+                "message": f"Imported data for {filled_subsections} subsections"
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Import failed: {str(e)}",
+                "errors": errors,
+                "warnings": warnings
+            }
     
     def approve_subsection(self, content: str):
         """Approve subsection and move to next"""
