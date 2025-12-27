@@ -21,7 +21,7 @@ from agents.pdd_agent import PDDAgent, METHODOLOGY_DATABASE, METHODOLOGY_CATEGOR
 # Page config
 st.set_page_config(
     page_title="Verra PDD Generator | Professional Carbon Project Documentation",
-    page_icon="📄",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -204,7 +204,7 @@ def render_document_creation():
     m = agent.methodology_data
     
     # Excel Import Section
-    with st.expander("📊 Import Data from Excel Template", expanded=False):
+    with st.expander("Import Data from Excel Template", expanded=False):
         st.markdown("### Bulk Data Import via Excel")
         st.info("Download the Excel template, fill in all your project data, and upload it to automatically populate all sections.")
         
@@ -212,7 +212,7 @@ def render_document_creation():
         
         with col1:
             # Generate and download template
-            if st.button("📥 Download Excel Template", type="primary", use_container_width=True):
+            if st.button("Download Excel Template", type="primary", use_container_width=True):
                 try:
                     from utils.excel_handler import ExcelTemplateGenerator
                     template = ExcelTemplateGenerator.generate_template(agent)
@@ -221,7 +221,7 @@ def render_document_creation():
                     filename = f"PDD_Template_{m['id']}_{project_name}.xlsx"
                     
                     st.download_button(
-                        "⬇️ Click to Download",
+                        "Click to Download",
                         template,
                         file_name=filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -240,7 +240,7 @@ def render_document_creation():
             )
             
             if uploaded_file is not None:
-                if st.button("📤 Import Data from Excel", type="primary", use_container_width=True):
+                if st.button("Import Data from Excel", type="primary", use_container_width=True):
                     try:
                         from utils.excel_handler import ExcelDataParser
                         import io
@@ -274,7 +274,7 @@ def render_document_creation():
                                     result = agent.import_from_excel(parsed_data)
                                 
                                 if result.get('success'):
-                                    st.success(f"✅ Successfully imported data!")
+                                    st.success(f"Successfully imported data")
                                     st.info(f"""
                                     - Filled {result.get('filled_subsections', 0)} subsections
                                     - Progress: {result.get('progress_percent', 0)}%
@@ -297,17 +297,15 @@ def render_document_creation():
     
     st.markdown("---")
     
-    # Header with AI status
+    # Header with EarthGPT status
     col1, col2 = st.columns([4, 1])
     with col1:
         st.header(f"{m['id']}: {m['title']}")
     with col2:
-        if agent.use_langchain:
-            st.success("🤖 AI Enabled (Gemini/Claude)")
-        elif agent.ai_enabled:
-            st.info("AI Enabled (Gemini)")
+        if agent.use_langchain or agent.ai_enabled:
+            st.success("EarthGPT Enabled")
         else:
-            st.warning("AI Disabled")
+            st.warning("EarthGPT Disabled")
     
     # Get current question
     current = agent.get_current_question()
@@ -326,16 +324,16 @@ def render_document_creation():
     # Guidance
     st.info(f"**Guidance:** {current['guidance']}")
     
-    # AI Assistant Panel
-    with st.expander("AI Content Assistant", expanded=False):
+    # EarthGPT Assistant Panel
+    with st.expander("EarthGPT Content Assistant", expanded=False):
         if agent.ai_enabled:
-            st.info("**AI-Powered Content Generation** - The AI assistant can help you create comprehensive, audit-ready content including detailed descriptions, data tables, and figure recommendations.")
+            st.info("**EarthGPT-Powered Content Generation** - The EarthGPT assistant can help you create comprehensive, audit-ready content including detailed descriptions, data tables, and figure recommendations.")
             
             # Main generation buttons
             ai_col1, ai_col2, ai_col3 = st.columns(3)
             
             with ai_col1:
-                if st.button("Generate Complete Draft", use_container_width=True, help="AI writes comprehensive section content"):
+                if st.button("Generate Complete Draft", use_container_width=True, help="EarthGPT writes comprehensive section content"):
                     with st.spinner("Generating professional content..."):
                         suggestion = agent.ai_generate_suggestion(current['subsection'])
                     st.session_state.ai_suggestion = suggestion
@@ -361,10 +359,10 @@ def render_document_creation():
                         st.session_state.value_suggestions = "\n\n".join(suggestions) if suggestions else "No numeric parameters found in this section."
                     st.rerun()
             
-            # Show AI generated draft
+            # Show EarthGPT generated draft
             if 'ai_suggestion' in st.session_state and st.session_state.ai_suggestion:
                 st.markdown("---")
-                st.markdown("#### AI Generated Content")
+                st.markdown("#### EarthGPT Generated Content")
                 st.info("This draft includes comprehensive descriptions, table structures, and figure recommendations marked as [FIGURE: description].")
                 
                 # Show preview
@@ -428,7 +426,7 @@ def render_document_creation():
                 st.markdown("#### Suggested Parameter Values")
                 st.markdown(st.session_state.value_suggestions)
             
-            # Ask AI a question
+            # Ask EarthGPT a question
             st.markdown("---")
             st.markdown("#### Ask Questions")
             ai_question = st.text_input(
@@ -442,7 +440,7 @@ def render_document_creation():
                 st.markdown("**Response:**")
                 st.markdown(answer)
         else:
-            st.warning("**AI Features Unavailable** - Set the GOOGLE_API_KEY environment variable to enable AI-powered content generation, table suggestions, and expert guidance.")
+            st.warning("**EarthGPT Features Unavailable** - Set the GOOGLE_API_KEY environment variable to enable EarthGPT-powered content generation, table suggestions, and expert guidance.")
     
     # Example
     if current.get('example'):
@@ -454,7 +452,7 @@ def render_document_creation():
     st.markdown("### Add Media Attachments")
     st.caption("Upload images, create tables, or generate plots to enrich your document")
     
-    media_tabs = st.tabs(["📷 Images", "📊 Tables", "📈 Plots"])
+    media_tabs = st.tabs(["Images", "Tables", "Plots"])
     
     with media_tabs[0]:
         uploaded_image = st.file_uploader(
@@ -469,7 +467,7 @@ def render_document_creation():
             img_desc = st.text_input("Image Description/Caption:", key=f"img_desc_{current['subsection']}")
             if st.button("Add Image to Document", key=f"add_img_{current['subsection']}"):
                 agent.add_media_attachment(current['subsection'], "image", img_data, img_desc)
-                st.success(f"✅ Image added! ({len(agent.get_media_attachments(current['subsection']))} attachment(s))")
+                st.success(f"Image added ({len(agent.get_media_attachments(current['subsection']))} attachment(s))")
     
     with media_tabs[1]:
         st.markdown("**Create Data Table**")
@@ -486,13 +484,13 @@ def render_document_creation():
                 table_md += "| " + " | ".join(["[Value]"] * table_cols) + " |\n"
             
             agent.add_media_attachment(current['subsection'], "table", table_md, table_desc)
-            st.success(f"✅ Table template created! Edit it in the document preview.")
+            st.success(f"Table template created. Edit it in the document preview.")
         
-        if agent.ai_enabled and st.button("AI Generate Table", key=f"ai_table_{current['subsection']}"):
-            with st.spinner("AI generating table..."):
+        if agent.ai_enabled and st.button("EarthGPT Generate Table", key=f"ai_table_{current['subsection']}"):
+            with st.spinner("EarthGPT generating table..."):
                 table_md = agent.ai_generate_table(table_desc or "Data Table", f"Section {current['subsection']}")
             agent.add_media_attachment(current['subsection'], "table", table_md, table_desc)
-            st.success("✅ AI-generated table added!")
+            st.success("EarthGPT-generated table added")
     
     with media_tabs[2]:
         st.markdown("**Generate Plot/Chart**")
@@ -503,7 +501,7 @@ def render_document_creation():
             # For now, create a placeholder - in production, this would generate actual plots
             placeholder = f"[PLOT: {plot_type} - {plot_desc}]"
             agent.add_media_attachment(current['subsection'], "plot", placeholder, plot_desc)
-            st.info("📊 Plot placeholder added. In production, this would generate an interactive chart.")
+            st.info("Plot placeholder added. In production, this would generate an interactive chart.")
             st.caption("Note: Full plot generation requires matplotlib/plotly integration")
     
     # Show existing attachments
@@ -540,7 +538,7 @@ def render_document_creation():
         with col1:
             submitted = st.form_submit_button("Save & Generate Draft", type="primary", use_container_width=True)
         with col2:
-            ai_generate = st.form_submit_button("AI Generate Content", use_container_width=True)
+            ai_generate = st.form_submit_button("EarthGPT Generate Content", use_container_width=True)
         with col3:
             skip = st.form_submit_button("Skip Section", use_container_width=True)
     
@@ -550,7 +548,7 @@ def render_document_creation():
         
         # Show input analysis
         if analysis.get('completeness', 100) < 80:
-            st.warning(f"⚠️ Input completeness: {analysis.get('completeness', 0)}%")
+            st.warning(f"Input completeness: {analysis.get('completeness', 0)}%")
             
             if analysis.get('missing_info'):
                 st.error("**Missing Critical Information:**")
@@ -565,13 +563,13 @@ def render_document_creation():
         # Show follow-up questions
         follow_ups = agent.get_follow_up_questions(user_input)
         if follow_ups:
-            st.info("**💡 Follow-up Questions to Enrich Content:**")
+            st.info("**Follow-up Questions to Enrich Content:**")
             for i, question in enumerate(follow_ups, 1):
                 st.markdown(f"{i}. {question}")
         
         # Show enrichment suggestions
         if analysis.get('suggestions'):
-            st.success("**✨ Suggestions to Enrich Content:**")
+            st.success("**Suggestions to Enrich Content:**")
             for suggestion in analysis['suggestions']:
                 st.markdown(f"- {suggestion}")
         
@@ -583,11 +581,11 @@ def render_document_creation():
     if ai_generate:
         agent.process_user_input(user_input)
         if agent.ai_enabled:
-            with st.spinner("AI is generating professional content..."):
+            with st.spinner("EarthGPT is generating professional content..."):
                 suggestion = agent.ai_generate_suggestion(current['subsection'])
             st.session_state.draft_content = suggestion
         else:
-            st.warning("AI features require GOOGLE_API_KEY environment variable to be set.")
+            st.warning("EarthGPT features require GOOGLE_API_KEY environment variable to be set.")
         st.rerun()
     
     if skip:
@@ -607,7 +605,7 @@ def render_document_creation():
             if st.button("Approve & Continue", type="primary", use_container_width=True):
                 agent.approve_subsection(edited)
                 st.session_state.draft_content = ""
-                # Clear AI suggestions
+                # Clear EarthGPT suggestions
                 if 'ai_suggestion' in st.session_state:
                     st.session_state.ai_suggestion = None
                 if 'value_suggestions' in st.session_state:
@@ -616,14 +614,14 @@ def render_document_creation():
                     st.session_state.table_figure_suggestions = None
                 st.rerun()
         with col2:
-            if st.button("AI Improve Content", use_container_width=True):
+            if st.button("EarthGPT Improve Content", use_container_width=True):
                 if agent.ai_enabled:
                     with st.spinner("Enhancing content..."):
                         improved = agent.ai_improve_text(edited, current['subsection'])
                     st.session_state.draft_content = improved
                     st.rerun()
                 else:
-                    st.warning("AI features require GOOGLE_API_KEY")
+                    st.warning("EarthGPT features require GOOGLE_API_KEY")
         with col3:
             if st.button("Regenerate Draft", use_container_width=True):
                 draft = agent.generate_subsection_draft()
