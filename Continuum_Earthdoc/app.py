@@ -17,6 +17,11 @@ except ImportError:
     pass  # python-dotenv is optional
 
 from agents.pdd_agent import PDDAgent, METHODOLOGY_DATABASE, METHODOLOGY_CATEGORIES
+try:
+    from knowledge.methodology_templates import get_subsection_field_hints, get_section_order
+except ImportError:
+    get_subsection_field_hints = lambda mid, key: []
+    get_section_order = lambda mid: ["1.1"]
 
 # Page config
 st.set_page_config(
@@ -40,14 +45,46 @@ def init_session():
     
     if 'draft_content' not in st.session_state:
         st.session_state.draft_content = ""
+    
+    # Guided AI (LangGraph) workflow
+    if 'guided_ai_thread_id' not in st.session_state:
+        st.session_state.guided_ai_thread_id = None
+    if 'guided_ai_state' not in st.session_state:
+        st.session_state.guided_ai_state = None
+    if 'guided_ai_initial' not in st.session_state:
+        st.session_state.guided_ai_initial = None
+    if 'guided_ai_config' not in st.session_state:
+        st.session_state.guided_ai_config = None
 
 
 def render_methodology_selection():
-    """Render methodology selection screen"""
+    """Render methodology selection screen. Guided AI is the primary path; section-by-section is secondary."""
     st.title("Verra VCS Project Description Generator")
     st.caption("Professional Documentation Tool for Verified Carbon Standard Projects")
-    
-    st.markdown("### Select Project Methodology")
+
+    try:
+        from agents.pdd_graph import is_langgraph_available
+        lg_ready = is_langgraph_available()
+    except Exception:
+        lg_ready = False
+
+    # Primary path: Guided AI (describe once → AI recommends methodology and generates sections → approve/revision)
+    if lg_ready:
+        st.markdown("### Start with Guided AI (recommended)")
+        st.markdown("Enter your project summary once. The system will recommend a methodology and generate each PDD section; you only **approve** or **request revision** at each step.")
+        if st.button("Start with Guided AI", type="primary", key="open_guided_ai", use_container_width=True):
+            st.session_state.view = "guided_ai"
+            st.session_state.guided_ai_thread_id = None
+            st.session_state.guided_ai_state = None
+            st.session_state.guided_ai_initial = None
+            st.rerun()
+        st.markdown("---")
+        st.markdown("### Or build section by section")
+        st.caption("Choose a methodology first, then fill each section manually or with AI assistance.")
+    else:
+        st.caption("Install `langgraph` for Guided AI: pip install langgraph")
+        st.markdown("### Select Project Methodology")
+
     st.markdown("Choose the VCS methodology that applies to your carbon project. You can search, get suggestions, or browse by category.")
     
     # Search/suggest
@@ -189,6 +226,26 @@ def render_sidebar():
                 st.session_state.view = 'generate'
                 st.rerun()
             
+            try:
+                from agents.pdd_graph import is_langgraph_available
+                if is_langgraph_available():
+                    if st.button("Switch to Guided AI", use_container_width=True, key="sidebar_guided_ai"):
+                        pd = agent.project_data or {}
+                        st.session_state.guided_ai_initial = {
+                            "project_description": (pd.get("project_description") or "").strip(),
+                            "project_name": (pd.get("project_name") or "").strip(),
+                            "host_country": (pd.get("host_country") or "").strip(),
+                            "methodology_id": agent.selected_methodology,
+                            "methodology_data": agent.methodology_data,
+                            "section_order": get_section_order(agent.selected_methodology),
+                        }
+                        st.session_state.guided_ai_thread_id = None
+                        st.session_state.guided_ai_state = None
+                        st.session_state.view = "guided_ai"
+                        st.rerun()
+            except Exception:
+                pass
+
             if st.button("Change Methodology", use_container_width=True):
                 st.session_state.agent = PDDAgent(gemini_api_key=os.environ.get('GOOGLE_API_KEY'))
                 st.session_state.view = 'methodology_select'
@@ -199,10 +256,37 @@ def render_sidebar():
 
 
 def render_document_creation():
-    """Render document creation interface"""
+    """Render document creation interface. Guided AI is available as an organic alternative."""
     agent = st.session_state.agent
     m = agent.methodology_data
-    
+
+    try:
+        from agents.pdd_graph import is_langgraph_available
+        guided_ai_ready = is_langgraph_available()
+    except Exception:
+        guided_ai_ready = False
+
+    if guided_ai_ready:
+        with st.container():
+            st.info("**Prefer Guided AI?** Describe your project once and we'll recommend a methodology and generate all sections; you only approve or request revision at each step.")
+            if st.button("Switch to Guided AI", type="primary", key="switch_to_guided_ai"):
+                pd = agent.project_data or {}
+                initial = {
+                    "project_description": (pd.get("project_description") or "").strip(),
+                    "project_name": (pd.get("project_name") or "").strip(),
+                    "host_country": (pd.get("host_country") or "").strip(),
+                }
+                if agent.selected_methodology and agent.methodology_data:
+                    initial["methodology_id"] = agent.selected_methodology
+                    initial["methodology_data"] = agent.methodology_data
+                    initial["section_order"] = get_section_order(agent.selected_methodology)
+                st.session_state.guided_ai_initial = initial
+                st.session_state.guided_ai_thread_id = None
+                st.session_state.guided_ai_state = None
+                st.session_state.view = "guided_ai"
+                st.rerun()
+        st.markdown("---")
+
     # Excel Import Section
     with st.expander("Import Data from Excel Template", expanded=False):
         st.markdown("### Bulk Data Import via Excel")
@@ -335,7 +419,11 @@ def render_document_creation():
             with ai_col1:
                 if st.button("Generate Complete Draft", use_container_width=True, help="EarthGPT writes comprehensive section content"):
                     with st.spinner("Generating professional content..."):
-                        suggestion = agent.ai_generate_suggestion(current['subsection'])
+                        mid = agent.selected_methodology or ""
+                        subsection_key = current['subsection']
+                        hints = get_subsection_field_hints(mid, subsection_key)
+                        context = ("Ensure the section addresses the following aspects: " + ", ".join(hints)) if hints else ""
+                        suggestion = agent.ai_generate_suggestion(subsection_key, context=context)
                     st.session_state.ai_suggestion = suggestion
                     st.rerun()
             
@@ -582,7 +670,11 @@ def render_document_creation():
         agent.process_user_input(user_input)
         if agent.ai_enabled:
             with st.spinner("EarthGPT is generating professional content..."):
-                suggestion = agent.ai_generate_suggestion(current['subsection'])
+                mid = agent.selected_methodology or ""
+                subsection_key = current['subsection']
+                hints = get_subsection_field_hints(mid, subsection_key)
+                context = ("Ensure the section addresses the following aspects: " + ", ".join(hints)) if hints else ""
+                suggestion = agent.ai_generate_suggestion(subsection_key, context=context)
             st.session_state.draft_content = suggestion
         else:
             st.warning("EarthGPT features require GOOGLE_API_KEY environment variable to be set.")
@@ -726,13 +818,194 @@ def render_document_generation():
         st.rerun()
 
 
+def render_guided_ai():
+    """Guided AI workflow: one description → AI generates sections → user approves/revises each step."""
+    import uuid
+    from agents.pdd_graph import build_pdd_graph, is_langgraph_available
+    from agents.pdd_agent import METHODOLOGY_DATABASE
+
+    if not is_langgraph_available():
+        st.warning("LangGraph is required for Guided AI. Install with: pip install langgraph")
+        if st.button("Back to methodology selection"):
+            st.session_state.view = "methodology_select"
+            st.rerun()
+        return
+
+    agent = st.session_state.agent
+    thread_id = st.session_state.guided_ai_thread_id
+    state = st.session_state.guided_ai_state
+    initial = st.session_state.guided_ai_initial
+
+    # ----- Start form: no initial input yet -----
+    if state is None and initial is None:
+        st.header("Guided AI: Describe your project")
+        st.markdown("Enter your project summary. The system will recommend a methodology and generate each PDD section; you only approve or request revision at each step.")
+        project_description = st.text_area("Project summary / overall description (required)", height=150, placeholder="e.g. Deployment of electric vehicle charging infrastructure across California to displace fossil fuel vehicle miles traveled...")
+        project_name = st.text_input("Project name (optional)", placeholder="e.g. GreenCharge California Network")
+        host_country = st.text_input("Host country (optional)", placeholder="e.g. United States")
+        if st.button("Start", type="primary"):
+            if not (project_description or "").strip():
+                st.error("Project description is required.")
+            else:
+                st.session_state.guided_ai_initial = {
+                    "project_description": (project_description or "").strip(),
+                    "project_name": (project_name or "").strip(),
+                    "host_country": (host_country or "").strip(),
+                }
+                st.session_state.guided_ai_thread_id = str(uuid.uuid4())
+                st.rerun()
+        if st.button("Back to methodology selection"):
+            st.session_state.view = "methodology_select"
+            st.rerun()
+        return
+
+    # ----- First run: invoke graph with initial state -----
+    if state is None and initial:
+        with st.spinner("Recommending methodology..."):
+            try:
+                graph, _ = build_pdd_graph(agent)
+                tid = st.session_state.guided_ai_thread_id or str(uuid.uuid4())
+                st.session_state.guided_ai_thread_id = tid
+                config = {"configurable": {"thread_id": tid}}
+                result = graph.invoke(initial, config)
+                st.session_state.guided_ai_state = result
+                st.session_state.guided_ai_config = config
+                st.rerun()
+            except Exception as e:
+                st.error(f"Graph error: {e}")
+                if st.button("Back to start"):
+                    st.session_state.guided_ai_initial = None
+                    st.session_state.guided_ai_thread_id = None
+                    st.rerun()
+        return
+
+    state = state or {}
+    config = st.session_state.get("guided_ai_config") or {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
+
+    # ----- Done: document ready -----
+    if state.get("document_markdown"):
+        doc_md = state["document_markdown"]
+        st.header("Guided AI: PDD ready")
+        st.success("All sections approved. Download your document below.")
+        with st.expander("Preview", expanded=False):
+            st.markdown(doc_md[:10000] + ("\n\n[... truncated ...]" if len(doc_md) > 10000 else ""))
+        tmp_path = None
+        try:
+            from utils.docx_converter import markdown_to_docx
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                tmp_path = tmp.name
+            markdown_to_docx(doc_md, tmp_path)
+            with open(tmp_path, "rb") as f:
+                buf = BytesIO(f.read())
+            buf.seek(0)
+            st.download_button("Download DOCX", buf, file_name=f"VCS_PDD_GuidedAI_{datetime.now().strftime('%Y%m%d_%H%M')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
+        except Exception as e:
+            st.error(f"DOCX failed: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        st.download_button("Download Markdown", doc_md, file_name=f"VCS_PDD_GuidedAI_{datetime.now().strftime('%Y%m%d_%H%M')}.md", mime="text/markdown")
+        if st.button("Back to methodology selection"):
+            st.session_state.view = "methodology_select"
+            st.session_state.guided_ai_state = None
+            st.session_state.guided_ai_initial = None
+            st.session_state.guided_ai_thread_id = None
+            st.rerun()
+        return
+
+    # ----- Error in state -----
+    if state.get("error"):
+        st.warning(state["error"])
+        if st.button("Back to start"):
+            st.session_state.guided_ai_initial = None
+            st.session_state.guided_ai_state = None
+            st.session_state.guided_ai_thread_id = None
+            st.rerun()
+        return
+
+    # ----- Confirm methodology (interrupt after recommend_methodology) -----
+    if state.get("methodology_id") and not ((state.get("pending_content") or "").strip()):
+        st.header("Confirm methodology")
+        mid = state.get("methodology_id", "")
+        m = state.get("methodology_data") or {}
+        st.markdown(f"**Recommended:** {mid} — {m.get('title', '')}")
+        st.caption(m.get("category", "") + " | " + (m.get("applicability", [""])[0] if m.get("applicability") else ""))
+        options = list(METHODOLOGY_DATABASE.keys())
+        idx = options.index(mid) if mid in options else 0
+        new_mid = st.selectbox("Use this methodology (or choose another)", options=options, index=idx, key="guided_ai_methodology")
+        if st.button("Confirm and generate sections", type="primary"):
+            try:
+                graph, _ = build_pdd_graph(agent)
+                updates = {} if new_mid == mid else {"methodology_id": new_mid, "methodology_data": METHODOLOGY_DATABASE.get(new_mid, m)}
+                graph.update_state(config, updates)
+                result = graph.invoke(None, config)
+                st.session_state.guided_ai_state = result
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+        if st.button("Back to methodology selection"):
+            st.session_state.view = "methodology_select"
+            st.session_state.guided_ai_state = None
+            st.session_state.guided_ai_initial = None
+            st.session_state.guided_ai_thread_id = None
+            st.rerun()
+        return
+
+    # ----- Approve / revise section (interrupt after generate_section) -----
+    pending = (state.get("pending_content") or "").strip()
+    subsection_key = state.get("current_subsection_key", "")
+    subsection_title = state.get("current_subsection_title", "")
+    section_order = state.get("section_order") or []
+    current_index = state.get("current_index", 0)
+
+    st.header(f"Section {subsection_key}: {subsection_title}")
+    st.caption(f"Step {current_index + 1} of {len(section_order)}")
+    st.markdown("---")
+    st.markdown(pending or "(No content generated.)")
+    st.markdown("---")
+    revision_instructions = st.text_area("Revision instructions (if requesting revision)", placeholder="e.g. Add more detail on emission factors...", key="guided_ai_revision")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Approve", type="primary"):
+            try:
+                graph, _ = build_pdd_graph(agent)
+                graph.update_state(config, {"user_decision": "approve"})
+                result = graph.invoke(None, config)
+                st.session_state.guided_ai_state = result
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+    with col2:
+        if st.button("Request revision"):
+            try:
+                graph, _ = build_pdd_graph(agent)
+                graph.update_state(config, {"user_decision": "revision", "revision_instructions": revision_instructions or "Please improve this section."})
+                result = graph.invoke(None, config)
+                st.session_state.guided_ai_state = result
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+    if st.button("Back to methodology selection"):
+        st.session_state.view = "methodology_select"
+        st.session_state.guided_ai_state = None
+        st.session_state.guided_ai_initial = None
+        st.session_state.guided_ai_thread_id = None
+        st.rerun()
+
+
 def main():
     """Main application"""
     init_session()
     
     agent = st.session_state.agent
     
-    if st.session_state.view == 'methodology_select' or not agent.selected_methodology:
+    if st.session_state.view == "guided_ai":
+        render_guided_ai()
+    elif st.session_state.view == 'methodology_select' or not agent.selected_methodology:
         render_methodology_selection()
     else:
         render_sidebar()

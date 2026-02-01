@@ -1,10 +1,20 @@
 """
 Methodology-Specific Section Templates
 Based on actual Verra VCS methodology templates and PDD requirements
-Each methodology has unique sections and subsections as per official templates
+Each methodology has unique sections and subsections as per official templates.
+Optional PDD templates (e.g. VCS EV) provide subsection-level field details
+used to enrich section generation for all methodologies equally.
 """
 
-from typing import Dict, List, Any
+import json
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+
+_KNOWLEDGE_DIR = Path(__file__).parent
+# Methodology ID -> optional PDD template filename (same folder). Used to add field hints.
+_PDD_TEMPLATE_BY_METHODOLOGY: Dict[str, str] = {
+    "VM0038": "vcs_ev_pdd_template.json",
+}
 
 
 # =============================================================================
@@ -752,4 +762,72 @@ def get_methodology_template(methodology_id: str) -> Dict:
 def get_all_methodology_ids() -> List[str]:
     """Get list of all methodology IDs with templates"""
     return list(METHODOLOGY_SECTION_TEMPLATES.keys())
+
+
+def get_section_order(methodology_id: str) -> List[str]:
+    """Return flat list of subsection keys (e.g. ['1.1','1.2',...,'5.6']) for a methodology."""
+    template = METHODOLOGY_SECTION_TEMPLATES.get(methodology_id)
+    if not template or "sections" not in template:
+        return [
+            "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8",
+            "2.1", "2.2", "2.3", "3.1", "3.2", "3.3", "3.4", "3.5", "3.6", "3.7", "3.8", "3.9", "3.10",
+            "4.1", "4.2", "4.3", "4.4", "4.5", "4.6", "4.7",
+            "5.1", "5.2", "5.3", "5.4", "5.5", "5.6",
+        ]
+    order = []
+    for sec in template["sections"]:
+        for sub in sec.get("subsections", []):
+            num = sub.get("num")
+            if num:
+                order.append(num)
+    return order if order else ["1.1"]
+
+
+def _load_pdd_template_if_any(methodology_id: str) -> Optional[Dict[str, Any]]:
+    """Load optional PDD template JSON for a methodology (e.g. VM0038 -> vcs_ev_pdd_template)."""
+    filename = _PDD_TEMPLATE_BY_METHODOLOGY.get(methodology_id)
+    if not filename:
+        return None
+    path = _KNOWLEDGE_DIR / filename
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def get_subsection_field_hints(methodology_id: str, subsection_key: str) -> List[str]:
+    """
+    Return optional field hints for a subsection (labels/placeholders from PDD template).
+    Used to enrich section generation so content addresses expected aspects; all methodologies
+    use the same flow, with hints when a PDD template exists for that methodology.
+    """
+    template = _load_pdd_template_if_any(methodology_id)
+    if not template or not subsection_key:
+        return []
+    section_keys = [f"section{i}" for i in range(1, 8)] + ["appendices", "cover"]
+    for sk in section_keys:
+        block = template.get(sk)
+        if not isinstance(block, dict):
+            continue
+        sub = block.get(subsection_key)
+        if not isinstance(sub, dict):
+            continue
+        user_fields = sub.get("user_fields") or {}
+        if not isinstance(user_fields, dict):
+            continue
+        hints: List[str] = []
+        for field_id, field_def in user_fields.items():
+            if not isinstance(field_def, dict):
+                continue
+            label = field_def.get("label") or field_id
+            placeholder = field_def.get("placeholder")
+            if placeholder:
+                hints.append(f"{label} ({placeholder})")
+            else:
+                hints.append(label)
+        return hints
+    return []
 

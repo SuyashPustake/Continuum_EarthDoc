@@ -1,0 +1,246 @@
+{
+  "_meta": {
+    "description": "VCS PDD template for EV infrastructure. Multistep form collects user_fields to produce a completed PDD.",
+    "user_fields_collected": true,
+    "form_steps_order": ["cover", "section1", "section2", "section3", "section4", "section5", "section6", "section7", "appendices"]
+  },
+  "cover": {
+    "fixed_text": "Verified Carbon Standard\n\nPROMOTION OF EV INFRASTRUCTURE AND EMISSION REDUCTION FOR SUSTAINABLE TRANSPORT BY {{company1}} AND {{company2}}\n\nProject title: {{project_title}}\nProject ID: {{project_id}}\nMonitoring period: {{monitoring_start}} to {{monitoring_end}}\nCrediting period: {{crediting_start}} to {{crediting_end}}\nOriginal date of issue: {{issue_date}}\nMost recent date of issue: {{recent_issue_date}}\nVersion: {{version}}\nVCS Standard Version: {{vcs_version}}\nPrepared by: {{prepared_by}}",
+    "user_fields": {
+      "project_title": {"type": "string", "label": "Project title"},
+      "project_id": {"type": "string", "label": "Project ID"},
+      "monitoring_start": {"type": "date", "label": "Monitoring period start"},
+      "monitoring_end": {"type": "date", "label": "Monitoring period end"},
+      "crediting_start": {"type": "date", "label": "Crediting period start"},
+      "crediting_end": {"type": "date", "label": "Crediting period end"},
+      "issue_date": {"type": "date", "label": "Original date of issue"},
+      "recent_issue_date": {"type": "date", "label": "Most recent date of issue"},
+      "version": {"type": "number", "label": "Version"},
+      "vcs_version": {"type": "string", "label": "VCS Standard Version", "default": "4.7"},
+      "prepared_by": {"type": "string", "label": "Prepared by"},
+      "company1": {"type": "string", "label": "Company 1 (project developer)"},
+      "company2": {"type": "string", "label": "Company 2 (project developer)"}
+    }
+  },
+  "contents": {
+    "fixed_text": "CONTENTS\n\n1 PROJECT DETAILS ...4\n1.1 Summary Description of the Project ...4\n... (full contents list as in document)",
+    "user_fields": {}
+  },
+  "section1": {
+    "1.1": {
+      "fixed_text": "1.1 Summary Description of the Project\n\nThe proposed grouped project is developed by {{company1}} and {{company2}}. This grouped project includes installing, operating, and managing EV charging infrastructure.",
+      "user_fields": {
+        "company1": {"type": "string", "label": "Company 1"},
+        "company2": {"type": "string", "label": "Company 2"},
+        "host_country": {"type": "string", "label": "Host country"},
+        "project_summary": {"type": "string", "label": "Project summary", "multiline": true},
+        "estimated_annual_reductions": {"type": "number", "label": "Estimated annual GHG reductions (tCO2e)"},
+        "total_reductions": {"type": "number", "label": "Total estimated reductions (tCO2e)"}
+      }
+    },
+    "1.2": {
+      "fixed_text": "1.2 Audit History\n\nThis section is not applicable as this project is being submitted for an initial registration, not a crediting period renewal.",
+      "user_fields": {"audit_history": {"type": "string", "label": "Audit history", "default": "Not applicable"}}
+    },
+    "1.3": {
+      "fixed_text": "1.3 Sectoral Scope and Project Type\n\nThe project activity falls under the following sectoral scope(s) and project type.",
+      "user_fields": {
+        "sectoral_scopes": {"type": "string", "label": "Sectoral scope(s)", "placeholder": "e.g. 1, 7"},
+        "project_type": {"type": "string", "label": "Project type", "placeholder": "e.g. Standalone or Grouped project"}
+      }
+    },
+    "1.4": {
+      "fixed_text": "1.4 Project Eligibility\n\n1.4.1 General eligibility\n\nThis project activity is supported by the following methodologies and eligibility criteria.",
+      "user_fields": {
+        "methodologies": {"type": "string", "label": "Applicable methodology/ies", "placeholder": "e.g. VM0038"},
+        "general_eligibility": {"type": "string", "label": "General eligibility statement", "multiline": true}
+      }
+    },
+    "1.5": {
+      "fixed_text": "1.5 Project Design\n\nThe project has been designed as: {{design_type}}\n\n1.5.1 Grouped Project Design\n\nThe grouped project is structured to include multiple project instances.",
+      "user_fields": {
+        "design_type": {"type": "enum", "label": "Design type", "options": ["Single location", "Multiple locations", "Grouped project"]}
+      }
+    },
+    "1.6": {
+      "fixed_text": "1.6 Project Proponent\n\n{{proponent_details}}",
+      "user_fields": {
+        "proponent_details": {"type": "string", "label": "Proponent name(s), role(s), and contact", "multiline": true}
+      }
+    },
+    "1.7": {
+      "fixed_text": "1.7 Other Entities Involved in the Project\n\n{{other_entities}}",
+      "user_fields": {
+        "other_entities": {"type": "string", "label": "Other entities (name, role)", "multiline": true}
+      }
+    },
+    "1.8": {
+      "fixed_text": "1.8 Ownership\n\n{{ownership_details}}",
+      "user_fields": {"ownership_details": {"type": "string", "label": "Ownership details", "multiline": true}}
+    },
+    "1.9": {
+      "fixed_text": "1.9 Project Start Date\n\n{{start_date}}",
+      "user_fields": {"start_date": {"type": "date", "label": "Project start date"}}
+    },
+    "1.10": {
+      "fixed_text": "1.10 Project Crediting Period\n\n{{crediting_period}}",
+      "user_fields": {"crediting_period": {"type": "string", "label": "Crediting period (e.g. 7 years from start)"}}
+    },
+    "1.11": {
+      "fixed_text": "1.11 Project Scale and Estimated GHG Emission Reductions or Removals\n\n{{project_scale}}\n\nEstimated reductions: {{estimated_reductions}} tCO2e.",
+      "user_fields": {
+        "project_scale": {"type": "string", "label": "Project scale description", "multiline": true},
+        "estimated_reductions": {"type": "number", "label": "Estimated GHG reductions (tCO2e)"}
+      }
+    },
+    "1.12": {
+      "fixed_text": "1.12 Description of the Project Activity\n\n{{activity_description}}",
+      "user_fields": {"activity_description": {"type": "string", "label": "Description of project activity", "multiline": true}}
+    },
+    "1.13": {
+      "fixed_text": "1.13 Project Location\n\n{{location_details}}\n\nGeographic boundary: {{geographic_boundary}}",
+      "user_fields": {
+        "location_details": {"type": "string", "label": "Location details", "multiline": true},
+        "geographic_boundary": {"type": "string", "label": "Geographic boundary", "multiline": true}
+      }
+    },
+    "1.14": {
+      "fixed_text": "1.14 Conditions Prior to Project Initiation\n\n{{prior_conditions}}",
+      "user_fields": {"prior_conditions": {"type": "string", "label": "Conditions prior to project", "multiline": true}}
+    },
+    "1.15": {
+      "fixed_text": "1.15 Compliance with Laws, Statutes and Other Regulatory Frameworks\n\n{{compliance_details}}",
+      "user_fields": {"compliance_details": {"type": "string", "label": "Compliance details", "multiline": true}}
+    },
+    "1.16": {
+      "fixed_text": "1.16 Double Counting and Participation under Other GHG Programs\n\n{{double_counting}}",
+      "user_fields": {"double_counting": {"type": "string", "label": "Double counting / other programs", "multiline": true}}
+    },
+    "1.17": {
+      "fixed_text": "1.17 Double Claiming, Other Forms of Credit, and Scope 3 Emissions\n\n{{double_claiming}}",
+      "user_fields": {"double_claiming": {"type": "string", "label": "Double claiming / scope 3", "multiline": true}}
+    },
+    "1.18": {
+      "fixed_text": "1.18 Sustainable Development Contributions\n\n{{sustainable_contributions}}",
+      "user_fields": {"sustainable_contributions": {"type": "string", "label": "Sustainable development contributions", "multiline": true}}
+    },
+    "1.19": {
+      "fixed_text": "1.19 Additional Information Relevant to the Project\n\n{{additional_info}}",
+      "user_fields": {"additional_info": {"type": "string", "label": "Additional information", "multiline": true}}
+    }
+  },
+  "section2": {
+    "2.1": {
+      "fixed_text": "2.1 Stakeholder Engagement and Consultation\n\n{{engagement_details}}",
+      "user_fields": {"engagement_details": {"type": "string", "label": "Stakeholder engagement details", "multiline": true}}
+    },
+    "2.2": {
+      "fixed_text": "2.2 Risks to Stakeholders and the Environment\n\n{{risks}}",
+      "user_fields": {"risks": {"type": "string", "label": "Risks to stakeholders and environment", "multiline": true}}
+    },
+    "2.3": {
+      "fixed_text": "2.3 Respect for Human Rights and Equity\n\n{{human_rights}}",
+      "user_fields": {"human_rights": {"type": "string", "label": "Human rights and equity", "multiline": true}}
+    },
+    "2.4": {
+      "fixed_text": "2.4 Ecosystem Health\n\n{{ecosystem_health}}",
+      "user_fields": {"ecosystem_health": {"type": "string", "label": "Ecosystem health", "multiline": true}}
+    }
+  },
+  "section3": {
+    "3.1": {
+      "fixed_text": "3.1 Title and Reference of Methodology\n\n{{methodology_title}}",
+      "user_fields": {"methodology_title": {"type": "string", "label": "Methodology title and reference"}}
+    },
+    "3.2": {
+      "fixed_text": "3.2 Applicability of Methodology\n\n{{applicability}}",
+      "user_fields": {"applicability": {"type": "string", "label": "Applicability of methodology", "multiline": true}}
+    },
+    "3.3": {
+      "fixed_text": "3.3 Project Boundary\n\n{{boundary}}",
+      "user_fields": {"boundary": {"type": "string", "label": "Project boundary", "multiline": true}}
+    },
+    "3.4": {
+      "fixed_text": "3.4 Baseline Scenario\n\n{{baseline_scenario}}",
+      "user_fields": {"baseline_scenario": {"type": "string", "label": "Baseline scenario", "multiline": true}}
+    },
+    "3.5": {
+      "fixed_text": "3.5 Additionality\n\n{{additionality}}",
+      "user_fields": {"additionality": {"type": "string", "label": "Additionality", "multiline": true}}
+    },
+    "3.6": {
+      "fixed_text": "3.6 Methodology Deviations\n\n{{deviations}}",
+      "user_fields": {"deviations": {"type": "string", "label": "Methodology deviations", "default": "None", "multiline": true}}
+    }
+  },
+  "section4": {
+    "4.1": {
+      "fixed_text": "4.1 Implementation Status of the Project Activity\n\n{{implementation_status}}",
+      "user_fields": {"implementation_status": {"type": "string", "label": "Implementation status", "multiline": true}}
+    }
+  },
+  "section5": {
+    "5.1": {
+      "fixed_text": "5.1 Baseline Emissions\n\n{{baseline_emissions}}",
+      "user_fields": {"baseline_emissions": {"type": "string", "label": "Baseline emissions", "multiline": true}}
+    },
+    "5.2": {
+      "fixed_text": "5.2 Project Emissions\n\n{{project_emissions}}",
+      "user_fields": {"project_emissions": {"type": "string", "label": "Project emissions", "multiline": true}}
+    },
+    "5.3": {
+      "fixed_text": "5.3 Leakage Emissions\n\n{{leakage_emissions}}",
+      "user_fields": {"leakage_emissions": {"type": "string", "label": "Leakage emissions", "multiline": true}}
+    },
+    "5.4": {
+      "fixed_text": "5.4 Estimated GHG Emission Reductions and Carbon Dioxide Removals\n\n{{estimated_reductions_details}}",
+      "user_fields": {"estimated_reductions_details": {"type": "string", "label": "Estimated reductions details", "multiline": true}}
+    }
+  },
+  "section6": {
+    "6.1": {
+      "fixed_text": "6.1 Data and Parameters Available at Validation\n\n{{validation_data}}",
+      "user_fields": {"validation_data": {"type": "string", "label": "Data/parameters at validation", "multiline": true}}
+    },
+    "6.2": {
+      "fixed_text": "6.2 Data and Parameters Monitored\n\n{{monitored_data}}",
+      "user_fields": {"monitored_data": {"type": "string", "label": "Data/parameters monitored", "multiline": true}}
+    },
+    "6.3": {
+      "fixed_text": "6.3 Monitoring Plan\n\n{{monitoring_plan}}",
+      "user_fields": {"monitoring_plan": {"type": "string", "label": "Monitoring plan", "multiline": true}}
+    }
+  },
+  "section7": {
+    "7.1": {
+      "fixed_text": "7.1 Data and Parameters Monitored\n\n{{monitored_params}}",
+      "user_fields": {"monitored_params": {"type": "string", "label": "Parameters monitored", "multiline": true}}
+    },
+    "7.2": {
+      "fixed_text": "7.2 Baseline Emissions\n\n{{actual_baseline}}",
+      "user_fields": {"actual_baseline": {"type": "string", "label": "Actual baseline emissions", "multiline": true}}
+    },
+    "7.3": {
+      "fixed_text": "7.3 Project Emissions\n\n{{actual_project_emissions}}",
+      "user_fields": {"actual_project_emissions": {"type": "string", "label": "Actual project emissions", "multiline": true}}
+    },
+    "7.4": {
+      "fixed_text": "7.4 Leakage Emissions\n\n{{actual_leakage}}",
+      "user_fields": {"actual_leakage": {"type": "string", "label": "Actual leakage", "multiline": true}}
+    },
+    "7.5": {
+      "fixed_text": "7.5 GHG Emission Reductions and Carbon Dioxide Removals\n\n{{actual_reductions}}",
+      "user_fields": {"actual_reductions": {"type": "string", "label": "Actual GHG reductions", "multiline": true}}
+    }
+  },
+  "appendices": {
+    "appendix1": {
+      "fixed_text": "APPENDIX 1: COMMERCIALLY SENSITIVE INFORMATION\n\n{{sensitive_info}}",
+      "user_fields": {"sensitive_info": {"type": "string", "label": "Commercially sensitive information", "multiline": true}}
+    },
+    "appendix2": {
+      "fixed_text": "APPENDIX 2: DETAILS ON EV CHARGING STATIONS\n\n{{ev_details}}",
+      "user_fields": {"ev_details": {"type": "string", "label": "EV charging station details", "multiline": true}}
+    }
+  }
+}

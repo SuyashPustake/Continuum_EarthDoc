@@ -14,7 +14,13 @@ langchain>=0.1.0
 langchain-google-genai>=1.0.0  # For Gemini 2.5 Flash
 langchain-anthropic>=0.1.0     # For Claude fallback
 langchain-community>=0.0.20    # For utilities
+
+# LangGraph (Guided AI workflow with human-in-the-loop)
+langgraph>=0.2.0
 # No ChromaDB needed - using direct context injection instead of RAG
+
+# Document templating (EV PDD assembly)
+jinja2>=3.1.0
 
 # Data Processing
 openpyxl>=3.1.2
