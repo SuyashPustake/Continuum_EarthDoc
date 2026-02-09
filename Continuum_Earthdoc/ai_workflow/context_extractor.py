@@ -37,12 +37,16 @@ class ContextExtractor:
         # Extract stakeholders
         stakeholders = ContextExtractor._extract_stakeholders(description)
         
+        # Determine scale based on annual reductions
+        annual_reductions = carbon_metrics.get('annual_reductions') or 0
+        scale = 'Large-scale' if annual_reductions > 60000 else 'Small-scale'
+        
         return {
             'project_name': project_name,
             'location': location,
             'project_type': project_type,
             'category': category,
-            'scale': 'Large-scale' if carbon_metrics.get('annual_reductions', 0) > 60000 else 'Small-scale',
+            'scale': scale,
             'carbon_metrics': carbon_metrics,
             'technology': tech_details,
             'stakeholders': stakeholders,
@@ -148,9 +152,13 @@ class ContextExtractor:
         period_match = re.search(r'(\d+)\s*(?:year|yr)s?\s*(?:crediting|period)', desc_lower)
         crediting_period = int(period_match.group(1)) if period_match else 10
         
+        # Calculate total if we have annual
+        if annual_reductions is not None and total_reductions is None:
+            total_reductions = annual_reductions * crediting_period
+        
         return {
-            'annual_reductions': annual_reductions,
-            'total_reductions': total_reductions or (annual_reductions * crediting_period if annual_reductions else None),
+            'annual_reductions': annual_reductions or 0,  # Default to 0 if None
+            'total_reductions': total_reductions or 0,    # Default to 0 if None
             'crediting_period': crediting_period
         }
     
