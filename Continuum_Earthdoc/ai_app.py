@@ -5,7 +5,9 @@ Clean, simple, robust - no failures, minimal human interference
 
 import streamlit as st
 import os
+import json
 from datetime import datetime
+from io import BytesIO
 
 # Load environment
 try:
@@ -15,13 +17,14 @@ except:
     pass
 
 from ai_workflow.pdd_workflow import PDDWorkflow
-from agents.pdd_agent import METHODOLOGY_DATABASE
+from agents.pdd_agent import METHODOLOGY_DATABASE, METHODOLOGY_CATEGORIES
 
 # Page config
 st.set_page_config(
     page_title="AI-Guided PDD Generator",
     page_icon="🌍",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 def init():
@@ -37,6 +40,21 @@ def render_input():
     st.title("🌍 AI-Guided PDD Generator")
     st.caption("Describe your project → Get complete PDD in 20 minutes")
     
+    # Two input methods: AI-Guided or Browse
+    input_method = st.radio(
+        "Choose input method:",
+        ["🤖 AI-Guided (Recommended)", "📚 Browse Methodologies"],
+        horizontal=True
+    )
+    
+    if input_method == "🤖 AI-Guided (Recommended)":
+        render_ai_guided_input()
+    else:
+        render_browse_input()
+
+
+def render_ai_guided_input():
+    """AI-guided project description input"""
     st.markdown("### Describe Your Carbon Project")
     st.markdown("Provide a comprehensive description (300-1000 words recommended)")
     
@@ -74,6 +92,104 @@ Additional benefits include improved urban air quality, support for India's EV t
                 st.session_state.workflow.get_recommendations(3)
                 st.session_state.step = 'methodology'
                 st.rerun()
+
+
+def render_browse_input():
+    """Browse and search methodologies directly"""
+    st.markdown("### Search or Browse Methodologies")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Search
+        search_query = st.text_input(
+            "🔍 Search by ID, keyword, or project type:",
+            placeholder="e.g., VM0038, EV, forestry, REDD, solar..."
+        )
+        
+        if search_query:
+            st.markdown("#### Search Results")
+            results = []
+            query_lower = search_query.lower()
+            
+            for method_id, method_data in METHODOLOGY_DATABASE.items():
+                if (query_lower in method_id.lower() or 
+                    query_lower in method_data.get('title', '').lower() or
+                    query_lower in method_data.get('category', '').lower() or
+                    query_lower in method_data.get('description', '').lower()):
+                    results.append((method_id, method_data))
+            
+            if results:
+                for method_id, method_data in results[:5]:
+                    with st.container():
+                        col_a, col_b = st.columns([5, 1])
+                        with col_a:
+                            st.markdown(f"**{method_id}: {method_data['title']}**")
+                            st.caption(f"{method_data['category']} | {method_data['description'][:100]}...")
+                        with col_b:
+                            if st.button("Select", key=f"search_{method_id}", use_container_width=True):
+                                # Skip to methodology selection with this specific one
+                                dummy_desc = f"Project using {method_data['title']}"
+                                st.session_state.workflow.set_description(dummy_desc)
+                                st.session_state.workflow.recommendations = [
+                                    st.session_state.workflow.methodology_matcher.recommend(dummy_desc, 1)[0]
+                                ]
+                                st.session_state.step = 'methodology'
+                                st.rerun()
+                        st.markdown("---")
+            else:
+                st.info("No methodologies found matching your search")
+    
+    with col2:
+        st.markdown("#### Quick Links")
+        st.markdown("**Popular:**")
+        if st.button("🚗 EV Charging (VM0038)", use_container_width=True):
+            quick_select_methodology("VM0038")
+        if st.button("🌳 Forestry (VM0047)", use_container_width=True):
+            quick_select_methodology("VM0047")
+        if st.button("☀️ Solar/Wind (AMS-I.D)", use_container_width=True):
+            quick_select_methodology("AMS-I.D")
+    
+    # Browse by category
+    st.markdown("---")
+    st.markdown("### Browse by Category")
+    
+    tabs = st.tabs(list(METHODOLOGY_CATEGORIES.keys()))
+    
+    for i, (category, method_ids) in enumerate(METHODOLOGY_CATEGORIES.items()):
+        with tabs[i]:
+            for method_id in method_ids:
+                if method_id in METHODOLOGY_DATABASE:
+                    method_data = METHODOLOGY_DATABASE[method_id]
+                    
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{method_id}: {method_data['title']}**")
+                        st.caption(f"Sectoral Scope: {', '.join(map(str, method_data.get('sectoral_scopes', [])))}")
+                        st.markdown(f"{method_data['description'][:120]}...")
+                    with col2:
+                        if st.button("Select", key=f"cat_{method_id}", use_container_width=True):
+                            quick_select_methodology(method_id)
+
+
+def quick_select_methodology(method_id: str):
+    """Quick select a methodology without full description"""
+    dummy_desc = f"Project using {METHODOLOGY_DATABASE[method_id]['title']}"
+    st.session_state.workflow.set_description(dummy_desc)
+    
+    # Create a single recommendation for this methodology
+    from ai_workflow.methodology_matcher import MethodologyRecommendation
+    st.session_state.workflow.recommendations = [
+        MethodologyRecommendation(
+            methodology_id=method_id,
+            title=METHODOLOGY_DATABASE[method_id]['title'],
+            category=METHODOLOGY_DATABASE[method_id]['category'],
+            confidence=100.0,
+            reasons=['Direct selection']
+        )
+    ]
+    st.session_state.step = 'methodology'
+    st.rerun()
 
 
 def render_methodology():
@@ -244,7 +360,7 @@ def render_complete():
     workflow = st.session_state.workflow
     
     st.title("🎉 PDD Complete!")
-    st.success("All sections approved. Your PDD is ready.")
+    st.success("All sections approved. Your PDD is ready for export.")
     
     progress = workflow.get_progress()
     
@@ -257,33 +373,367 @@ def render_complete():
         st.metric("Fields Filled", len([f for s in workflow.sections for f in s.values]))
     
     # Compile button
-    if st.button("Compile Document", type="primary", use_container_width=True):
-        with st.spinner("Compiling..."):
-            pdd = workflow.compile_pdd()
-            st.session_state.pdd_document = pdd
+    if not st.session_state.get('pdd_document'):
+        if st.button("📝 Compile Document", type="primary", use_container_width=True):
+            with st.spinner("Compiling..."):
+                pdd = workflow.compile_pdd()
+                st.session_state.pdd_document = pdd
+                st.rerun()
+    
+    # Export options
+    if st.session_state.get('pdd_document'):
+        st.markdown("---")
+        st.markdown("### 📥 Export Your PDD")
+        
+        # Export format tabs
+        tab1, tab2, tab3, tab4 = st.tabs(["Markdown", "Word (DOCX)", "JSON", "Excel"])
+        
+        with tab1:
+            st.markdown("#### Markdown Export")
+            st.info("Universal format, works with any text editor")
+            
+            st.download_button(
+                "⬇ Download Markdown (.md)",
+                st.session_state.pdd_document,
+                file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+            
+            with st.expander("Preview Content"):
+                st.markdown(st.session_state.pdd_document[:3000] + "\n\n... (truncated)")
+        
+        with tab2:
+            st.markdown("#### Word Document Export")
+            st.info("Professional DOCX format for editing and submission")
+            
+            if st.button("Generate DOCX", type="primary", use_container_width=True):
+                with st.spinner("Generating Word document..."):
+                    try:
+                        from utils.docx_converter import MarkdownToDOCXConverter
+                        
+                        converter = MarkdownToDOCXConverter()
+                        docx_bytes = converter.convert(
+                            st.session_state.pdd_document,
+                            title=f"{workflow.context.get('project_name', 'Project')} - PDD"
+                        )
+                        
+                        st.download_button(
+                            "⬇ Download Word Document (.docx)",
+                            docx_bytes,
+                            file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True
+                        )
+                        st.success("✓ DOCX generated!")
+                    except Exception as e:
+                        st.error(f"Error generating DOCX: {str(e)}")
+                        st.info("Make sure python-docx is installed: pip install python-docx")
+        
+        with tab3:
+            st.markdown("#### JSON Export")
+            st.info("Structured data format for integration and processing")
+            
+            # Compile JSON
+            json_data = {
+                'methodology': workflow.selected_methodology,
+                'methodology_title': METHODOLOGY_DATABASE.get(workflow.selected_methodology, {}).get('title', ''),
+                'project_info': workflow.context,
+                'generated_date': datetime.now().isoformat(),
+                'sections': []
+            }
+            
+            for section in workflow.sections:
+                if section.approved:
+                    json_data['sections'].append({
+                        'number': section.num,
+                        'title': section.title,
+                        'fields': section.values
+                    })
+            
+            json_str = json.dumps(json_data, indent=2)
+            
+            st.download_button(
+                "⬇ Download JSON",
+                json_str,
+                file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+            
+            with st.expander("Preview JSON"):
+                st.json(json_data)
+        
+        with tab4:
+            st.markdown("#### Excel Export")
+            st.info("Spreadsheet format with all sections and fields")
+            
+            if st.button("Generate Excel", type="primary", use_container_width=True):
+                with st.spinner("Generating Excel..."):
+                    try:
+                        from utils.excel_handler import ExcelTemplateGenerator
+                        from agents.pdd_agent import PDDAgent
+                        
+                        # Create temp agent with workflow data
+                        temp_agent = PDDAgent(os.environ.get('GOOGLE_API_KEY'))
+                        temp_agent.select_methodology(workflow.selected_methodology)
+                        
+                        # Populate with workflow data
+                        for section in workflow.sections:
+                            if section.approved:
+                                # Map to agent's data structure
+                                for field_name, field_value in section.values.items():
+                                    temp_agent.project_data[field_name] = field_value
+                        
+                        excel_bytes = ExcelTemplateGenerator.generate_filled_template(temp_agent)
+                        
+                        st.download_button(
+                            "⬇ Download Excel (.xlsx)",
+                            excel_bytes,
+                            file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                        st.success("✓ Excel generated!")
+                    except Exception as e:
+                        st.error(f"Error generating Excel: {str(e)}")
+                        st.info("Make sure openpyxl is installed: pip install openpyxl")
+    
+    st.markdown("---")
+    
+    # Actions
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Generate Another Section", use_container_width=True):
+            st.session_state.step = 'generation'
             st.rerun()
     
-    # Download
-    if st.session_state.get('pdd_document'):
-        st.markdown("### Download")
+    with col2:
+        if st.button("🏠 Start New Project", use_container_width=True):
+            st.session_state.workflow = PDDWorkflow(os.environ.get('GOOGLE_API_KEY'))
+            st.session_state.step = 'input'
+            st.session_state.pdd_document = None
+            st.rerun()
+
+
+def render_sidebar():
+    """Render sidebar with progress and tools"""
+    with st.sidebar:
+        st.markdown("### 🌍 AI-Guided PDD Generator")
+        st.markdown("---")
         
-        st.download_button(
-            "⬇ Download PDD (Markdown)",
-            st.session_state.pdd_document,
-            file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.md",
-            mime="text/markdown",
-            use_container_width=True
+        workflow = st.session_state.workflow
+        step = st.session_state.step
+        
+        # Show progress if methodology selected
+        if workflow.selected_methodology:
+            st.markdown("#### Selected Methodology")
+            method_info = METHODOLOGY_DATABASE.get(workflow.selected_methodology, {})
+            st.markdown(f"**{workflow.selected_methodology}**")
+            st.caption(method_info.get('title', '')[:50] + "...")
+            st.caption(f"Category: {method_info.get('category', 'Unknown')}")
+            
+            st.markdown("---")
+            
+            # Progress
+            if workflow.sections:
+                progress = workflow.get_progress()
+                st.markdown("#### Progress")
+                st.progress(progress['percent'] / 100)
+                st.caption(f"{progress['approved']}/{progress['total']} sections completed ({progress['percent']}%)")
+                
+                # Show sections
+                with st.expander("View All Sections"):
+                    for i, section in enumerate(workflow.sections):
+                        if section.approved:
+                            st.markdown(f"✓ {section.num} {section.title}")
+                        elif i == workflow.current_section_idx:
+                            st.markdown(f"▸ {section.num} {section.title}")
+                        else:
+                            st.markdown(f"○ {section.num} {section.title}")
+            
+            st.markdown("---")
+            
+            # Actions
+            st.markdown("#### Actions")
+            
+            if st.button("🔄 Change Methodology", use_container_width=True):
+                st.session_state.workflow = PDDWorkflow(os.environ.get('GOOGLE_API_KEY'))
+                st.session_state.step = 'input'
+                st.rerun()
+            
+            if workflow.sections and progress['approved'] > 0:
+                if st.button("📥 Export Current Progress", use_container_width=True):
+                    st.session_state.show_export = True
+        
+        else:
+            st.info("Start by describing your project to get AI-powered PDD generation")
+        
+        st.markdown("---")
+        
+        # Additional Tools
+        st.markdown("#### 🛠️ Additional Tools")
+        
+        if st.button("📊 Excel Template", use_container_width=True):
+            st.session_state.show_excel_tools = True
+        
+        if st.button("📄 PDMR Extractor", use_container_width=True):
+            st.session_state.show_pdmr_tools = True
+        
+        # Info
+        st.markdown("---")
+        st.caption("Version 2.0 | AI-Powered Workflow")
+        st.caption("Supports 10 Verra Methodologies")
+
+
+def render_excel_tools():
+    """Render Excel import/export tools"""
+    st.title("📊 Excel Template Tools")
+    st.caption("Import or export PDD data via Excel templates")
+    
+    tab1, tab2 = st.tabs(["📥 Download Template", "📤 Upload Data"])
+    
+    with tab1:
+        st.markdown("### Download Excel Template")
+        st.info("Generate an Excel template for your selected methodology to fill offline and re-import.")
+        
+        if st.session_state.workflow.selected_methodology:
+            method = st.session_state.workflow.selected_methodology
+            
+            if st.button("Generate Excel Template", type="primary"):
+                try:
+                    from utils.excel_handler import ExcelTemplateGenerator
+                    from agents.pdd_agent import PDDAgent
+                    
+                    # Create temp agent for template generation
+                    temp_agent = PDDAgent(os.environ.get('GOOGLE_API_KEY'))
+                    temp_agent.select_methodology(method)
+                    
+                    template = ExcelTemplateGenerator.generate_template(temp_agent)
+                    
+                    filename = f"PDD_Template_{method}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+                    
+                    st.download_button(
+                        "⬇ Download Template",
+                        template,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    st.success("✓ Template generated! Click download above.")
+                except Exception as e:
+                    st.error(f"Error generating template: {str(e)}")
+        else:
+            st.warning("Please select a methodology first")
+    
+    with tab2:
+        st.markdown("### Upload Filled Excel Template")
+        st.info("Upload your filled Excel template to automatically populate all sections.")
+        
+        uploaded_file = st.file_uploader(
+            "Choose Excel file",
+            type=['xlsx', 'xls'],
+            help="Upload your filled Excel template"
         )
         
-        # Preview
-        with st.expander("Preview"):
-            st.markdown(st.session_state.pdd_document[:3000])
+        if uploaded_file:
+            if st.button("Import Data", type="primary"):
+                try:
+                    from utils.excel_handler import ExcelTemplateGenerator
+                    
+                    # Import data
+                    imported_data = ExcelTemplateGenerator.import_from_template(uploaded_file)
+                    
+                    # Apply to workflow
+                    st.success(f"✓ Imported {len(imported_data)} sections")
+                    st.json(imported_data)
+                    
+                except Exception as e:
+                    st.error(f"Error importing: {str(e)}")
     
-    # Start new
-    if st.button("🏠 Start New Project"):
-        st.session_state.workflow = PDDWorkflow(os.environ.get('GOOGLE_API_KEY'))
-        st.session_state.step = 'input'
-        st.session_state.pdd_document = None
+    if st.button("← Back"):
+        st.session_state.show_excel_tools = False
+        st.rerun()
+
+
+def render_pdmr_tools():
+    """Render PDMR extraction tools"""
+    st.title("📄 PDMR Extraction Tools")
+    st.caption("Extract and analyze Project Monitoring Reports")
+    
+    tab1, tab2 = st.tabs(["Extract PDMR", "Analyze PDMR"])
+    
+    with tab1:
+        st.markdown("### Extract PDMR Data")
+        st.info("Upload a PDMR document (PDF/DOCX) to extract structured data")
+        
+        uploaded_file = st.file_uploader(
+            "Upload PDMR Document",
+            type=['pdf', 'docx', 'doc'],
+            help="Upload your PDMR document for extraction"
+        )
+        
+        if uploaded_file:
+            if st.button("Extract Data", type="primary"):
+                with st.spinner("Extracting PDMR data..."):
+                    try:
+                        from comprehensive_extract_pdd import extract_pdd_from_file
+                        
+                        # Save temp file
+                        temp_path = f"/tmp/{uploaded_file.name}"
+                        with open(temp_path, 'wb') as f:
+                            f.write(uploaded_file.read())
+                        
+                        # Extract
+                        result = extract_pdd_from_file(temp_path)
+                        
+                        st.success("✓ Extraction complete!")
+                        st.json(result)
+                        
+                        # Download as Excel
+                        if st.button("Download as Excel"):
+                            from extract_pdmr_to_excel import generate_excel_from_extraction
+                            excel_file = generate_excel_from_extraction(result)
+                            
+                            st.download_button(
+                                "⬇ Download Excel",
+                                excel_file,
+                                file_name=f"PDMR_Extracted_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                    
+                    except Exception as e:
+                        st.error(f"Extraction error: {str(e)}")
+    
+    with tab2:
+        st.markdown("### Analyze PDMR")
+        st.info("Get AI-powered analysis and recommendations for your PDMR")
+        
+        uploaded_file = st.file_uploader(
+            "Upload PDMR for Analysis",
+            type=['pdf', 'docx', 'doc'],
+            key="pdmr_analysis"
+        )
+        
+        if uploaded_file:
+            if st.button("Analyze", type="primary"):
+                with st.spinner("Analyzing PDMR..."):
+                    try:
+                        from comprehensive_pdmr_analysis import analyze_pdmr
+                        
+                        temp_path = f"/tmp/{uploaded_file.name}"
+                        with open(temp_path, 'wb') as f:
+                            f.write(uploaded_file.read())
+                        
+                        analysis = analyze_pdmr(temp_path)
+                        
+                        st.success("✓ Analysis complete!")
+                        st.markdown(analysis)
+                    
+                    except Exception as e:
+                        st.error(f"Analysis error: {str(e)}")
+    
+    if st.button("← Back"):
+        st.session_state.show_pdmr_tools = False
         st.rerun()
 
 
@@ -291,6 +741,27 @@ def main():
     """Main app"""
     init()
     
+    # Initialize additional state
+    if 'show_excel_tools' not in st.session_state:
+        st.session_state.show_excel_tools = False
+    if 'show_pdmr_tools' not in st.session_state:
+        st.session_state.show_pdmr_tools = False
+    if 'show_export' not in st.session_state:
+        st.session_state.show_export = False
+    
+    # Render sidebar
+    render_sidebar()
+    
+    # Check for tool views
+    if st.session_state.show_excel_tools:
+        render_excel_tools()
+        return
+    
+    if st.session_state.show_pdmr_tools:
+        render_pdmr_tools()
+        return
+    
+    # Main workflow
     step = st.session_state.step
     
     if step == 'input':
