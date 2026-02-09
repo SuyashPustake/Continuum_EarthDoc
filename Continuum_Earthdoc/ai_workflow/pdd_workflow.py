@@ -7,21 +7,28 @@ import os
 import json
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field as dc_field
+import json
 
 from ai_workflow.context_extractor import ContextExtractor
 from ai_workflow.methodology_matcher import MethodologyMatcher, MethodologyRecommendation
 from ai_workflow.field_generator import FieldGenerator
+from ai_workflow.enhanced_content_generator import EnhancedContentGenerator, VisualElement
+from ai_workflow.comprehensive_compiler import ComprehensivePDDCompiler
 from agents.pdd_agent import METHODOLOGY_DATABASE
 from knowledge.methodology_templates import METHODOLOGY_SECTION_TEMPLATES
 
 
 @dataclass
 class PDDSection:
-    """Represents a PDD section with fields"""
+    """Represents a PDD section with enhanced content"""
     num: str
     title: str
     fields: Dict[str, Dict] = dc_field(default_factory=dict)  # field definitions
     values: Dict[str, Any] = dc_field(default_factory=dict)  # populated values
+    narrative: str = ''  # comprehensive narrative content
+    visual_elements: List[VisualElement] = dc_field(default_factory=list)  # tables, charts, images
+    metrics: Dict[str, Any] = dc_field(default_factory=dict)  # calculated metrics
+    word_count: int = 0  # section word count
     approved: bool = False
 
 
@@ -39,6 +46,8 @@ class PDDWorkflow:
         self.context_extractor = ContextExtractor()
         self.methodology_matcher = MethodologyMatcher(METHODOLOGY_DATABASE)
         self.field_generator = FieldGenerator(self.api_key)
+        self.enhanced_generator = EnhancedContentGenerator(self.api_key)  # For comprehensive content
+        self.compiler = ComprehensivePDDCompiler()  # For 50-70 page PDDs
         
         # Workflow state
         self.project_description = ''
@@ -88,25 +97,49 @@ class PDDWorkflow:
             'methodology': METHODOLOGY_DATABASE[methodology_id]
         }
     
-    def populate_current_section(self) -> Dict:
-        """Step 4: Populate fields for current section"""
+    def populate_current_section(self, use_enhanced: bool = True) -> Dict:
+        """
+        Step 4: Populate fields for current section
+        
+        Args:
+            use_enhanced: If True, use enhanced generator for comprehensive content
+                         If False, use basic field generator
+        """
         if self.current_section_idx >= len(self.sections):
             return {'success': True, 'complete': True}
         
         section = self.sections[self.current_section_idx]
         
-        # Generate field values
-        section.values = self.field_generator.generate_fields(
-            section.num,
-            section.title,
-            section.fields,
-            self.context
-        )
+        if use_enhanced and self.enhanced_generator.ai_enabled:
+            # Use enhanced generator for comprehensive content
+            result = self.enhanced_generator.generate_comprehensive_section(
+                section.num,
+                section.title,
+                section.fields,
+                self.context,
+                self.selected_methodology
+            )
+            
+            # Update section with comprehensive content
+            section.values = result['fields']
+            section.narrative = result['narrative']
+            section.visual_elements = result['visual_elements']
+            section.metrics = result['metrics']
+            section.word_count = result['word_count']
+        else:
+            # Use basic field generator
+            section.values = self.field_generator.generate_fields(
+                section.num,
+                section.title,
+                section.fields,
+                self.context
+            )
         
         return {
             'success': True,
             'section': section,
-            'progress': (self.current_section_idx + 1) / len(self.sections) * 100
+            'progress': (self.current_section_idx + 1) / len(self.sections) * 100,
+            'enhanced': use_enhanced
         }
     
     def approve_section(self, edited_values: Optional[Dict] = None):
@@ -118,28 +151,51 @@ class PDDWorkflow:
             section.approved = True
             self.current_section_idx += 1
     
-    def compile_pdd(self) -> str:
-        """Step 6: Compile complete PDD from all approved sections"""
-        lines = []
+    def compile_pdd(self, comprehensive: bool = True) -> str:
+        """
+        Step 6: Compile complete PDD from all approved sections
         
-        # Cover page
-        lines.append(f"# Verified Carbon Standard")
-        lines.append(f"# Project Description Document\n")
-        lines.append(f"**Project:** {self.context.get('project_name', 'Untitled')}")
-        lines.append(f"**Methodology:** {self.selected_methodology}")
-        lines.append(f"**Location:** {self.context.get('location', {}).get('country', 'TBD')}\n")
-        lines.append("---\n")
-        
-        # All sections
-        for section in self.sections:
-            if section.approved:
-                lines.append(f"## {section.num} {section.title}\n")
-                for field_name, value in section.values.items():
-                    label = field_name.replace('_', ' ').title()
-                    lines.append(f"**{label}:** {value}\n")
-                lines.append("\n---\n")
-        
-        return '\n'.join(lines)
+        Args:
+            comprehensive: If True, generate 50-70 page comprehensive PDD
+                          If False, generate basic PDD
+        """
+        if comprehensive and self.compiler:
+            # Use comprehensive compiler for 50-70 page PDD
+            return self.compiler.compile(
+                self.selected_methodology,
+                self.context,
+                [s for s in self.sections if s.approved],
+                include_appendices=True
+            )
+        else:
+            # Basic compilation
+            lines = []
+            
+            # Cover page
+            lines.append(f"# Verified Carbon Standard")
+            lines.append(f"# Project Description Document\n")
+            lines.append(f"**Project:** {self.context.get('project_name', 'Untitled')}")
+            lines.append(f"**Methodology:** {self.selected_methodology}")
+            lines.append(f"**Location:** {self.context.get('location', {}).get('country', 'TBD')}\n")
+            lines.append("---\n")
+            
+            # All sections
+            for section in self.sections:
+                if section.approved:
+                    lines.append(f"## {section.num} {section.title}\n")
+                    
+                    # Add narrative if available
+                    if section.narrative:
+                        lines.append(section.narrative + "\n\n")
+                    
+                    # Add fields
+                    for field_name, value in section.values.items():
+                        label = field_name.replace('_', ' ').title()
+                        lines.append(f"**{label}:** {value}\n")
+                    
+                    lines.append("\n---\n")
+            
+            return '\n'.join(lines)
     
     def _load_template(self, methodology_id: str) -> Optional[Dict]:
         """Load comprehensive template for methodology"""

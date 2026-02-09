@@ -263,7 +263,7 @@ def render_generation():
         st.rerun()
         return
     
-    st.title("📝 Review AI-Generated Fields")
+    st.title("📝 Review AI-Generated Content")
     st.caption(f"{workflow.selected_methodology} | {workflow.context.get('project_name', 'Unknown')}")
     
     # Progress bar
@@ -275,65 +275,160 @@ def render_generation():
     # Current section
     section = workflow.sections[workflow.current_section_idx]
     
+    # Enhanced mode toggle (initialize once)
+    if 'use_enhanced' not in st.session_state:
+        st.session_state.use_enhanced = True
+    
     # Populate if not yet done
     if not section.values:
-        with st.spinner(f"AI is populating fields for {section.num}..."):
-            workflow.populate_current_section()
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.session_state.use_enhanced = st.toggle(
+                "🚀 Enhanced Mode (Comprehensive Content + Visual Elements)",
+                value=st.session_state.use_enhanced,
+                help="Enhanced mode generates comprehensive narrative, tables, charts, and calculated metrics. Basic mode only fills field values."
+            )
+        with col2:
+            pass  # Empty for spacing
+        
+        mode_text = "Enhanced (comprehensive)" if st.session_state.use_enhanced else "Basic (fields only)"
+        with st.spinner(f"AI is generating {mode_text} content for {section.num}..."):
+            workflow.populate_current_section(use_enhanced=st.session_state.use_enhanced)
             st.rerun()
     
     st.markdown(f"## {section.num}: {section.title}")
-    st.info(f"✨ AI has pre-filled {len(section.fields)} fields from your project description. Review and approve.")
     
-    # Show fields
-    if section.fields:
-        edited_values = {}
-        
-        for field_name, field_def in section.fields.items():
-            ftype = field_def.get('type', 'string')
-            required = field_def.get('required', False)
-            value = section.values.get(field_name, field_def.get('default', ''))
-            
-            label = field_name.replace('_', ' ').title()
-            if required:
-                label += " *"
-            
-            # Render input
-            if ftype == 'textarea':
-                edited_values[field_name] = st.text_area(
-                    label,
-                    value=str(value) if value else '',
-                    height=150,
-                    key=f"f_{workflow.current_section_idx}_{field_name}"
-                )
-            elif ftype in ['number', 'integer']:
-                try:
-                    num_val = float(value) if value not in [None, '', 'TBD'] else 0.0
-                except:
-                    num_val = 0.0
-                edited_values[field_name] = st.number_input(
-                    label,
-                    value=num_val,
-                    key=f"f_{workflow.current_section_idx}_{field_name}"
-                )
-            elif ftype == 'boolean':
-                edited_values[field_name] = st.checkbox(
-                    label,
-                    value=bool(value),
-                    key=f"f_{workflow.current_section_idx}_{field_name}"
-                )
-            else:  # string
-                edited_values[field_name] = st.text_input(
-                    label,
-                    value=str(value) if value else '',
-                    key=f"f_{workflow.current_section_idx}_{field_name}"
-                )
+    # Show content tabs
+    if section.narrative or section.visual_elements or section.metrics:
+        tabs = ["📄 Fields", "📖 Narrative", "📊 Visual Elements", "🔢 Metrics"]
+        tab_fields, tab_narrative, tab_visual, tab_metrics = st.tabs(tabs)
     else:
-        st.warning("No fields defined for this section")
-        edited_values = {}
+        tabs = ["📄 Fields"]
+        tab_fields = st.tabs(tabs)[0]
+        tab_narrative = tab_visual = tab_metrics = None
+    
+    # Tab 1: Fields
+    with tab_fields:
+        st.info(f"✨ AI has pre-filled {len(section.fields)} fields. Review and edit as needed.")
+        
+        if section.fields:
+            edited_values = {}
+            
+            for field_name, field_def in section.fields.items():
+                ftype = field_def.get('type', 'string')
+                required = field_def.get('required', False)
+                value = section.values.get(field_name, field_def.get('default', ''))
+                
+                label = field_name.replace('_', ' ').title()
+                if required:
+                    label += " *"
+                
+                # Render input
+                if ftype == 'textarea':
+                    edited_values[field_name] = st.text_area(
+                        label,
+                        value=str(value) if value else '',
+                        height=150,
+                        key=f"f_{workflow.current_section_idx}_{field_name}"
+                    )
+                elif ftype in ['number', 'integer']:
+                    try:
+                        num_val = float(value) if value not in [None, '', 'TBD'] else 0.0
+                    except:
+                        num_val = 0.0
+                    edited_values[field_name] = st.number_input(
+                        label,
+                        value=num_val,
+                        key=f"f_{workflow.current_section_idx}_{field_name}"
+                    )
+                elif ftype == 'boolean':
+                    edited_values[field_name] = st.checkbox(
+                        label,
+                        value=bool(value),
+                        key=f"f_{workflow.current_section_idx}_{field_name}"
+                    )
+                else:  # string
+                    edited_values[field_name] = st.text_input(
+                        label,
+                        value=str(value) if value else '',
+                        key=f"f_{workflow.current_section_idx}_{field_name}"
+                    )
+        else:
+            st.warning("No fields defined for this section")
+            edited_values = {}
+    
+    # Tab 2: Narrative
+    if tab_narrative and section.narrative:
+        with tab_narrative:
+            st.markdown("### Comprehensive Narrative Content")
+            st.caption(f"Word count: {section.word_count}")
+            
+            # Editable narrative
+            edited_narrative = st.text_area(
+                "Edit narrative content",
+                value=section.narrative,
+                height=400,
+                key=f"narrative_{workflow.current_section_idx}"
+            )
+            
+            if edited_narrative != section.narrative:
+                section.narrative = edited_narrative
+                section.word_count = len(edited_narrative.split())
+    
+    # Tab 3: Visual Elements
+    if tab_visual and section.visual_elements:
+        with tab_visual:
+            st.markdown("### Visual Elements (Tables, Charts, Images)")
+            st.info(f"✨ {len(section.visual_elements)} visual element(s) suggested for this section")
+            
+            for i, element in enumerate(section.visual_elements):
+                with st.expander(f"{element.type.title()}: {element.title}", expanded=True):
+                    st.markdown(f"**Description:** {element.description}")
+                    
+                    if element.type == 'table' and isinstance(element.data, dict):
+                        # Display table
+                        if 'headers' in element.data and 'rows' in element.data:
+                            import pandas as pd
+                            try:
+                                df = pd.DataFrame(element.data['rows'], columns=element.data['headers'])
+                                st.dataframe(df, use_container_width=True)
+                            except:
+                                st.json(element.data)
+                        else:
+                            st.json(element.data)
+                    
+                    elif element.type == 'chart':
+                        st.markdown("**Chart Specification:**")
+                        st.json(element.data)
+                        st.caption("💡 Chart will be rendered in final document")
+                    
+                    elif element.type == 'image':
+                        st.markdown("**Image/Diagram Specification:**")
+                        st.json(element.data)
+                        st.caption("💡 Add actual image file during final document preparation")
+    
+    # Tab 4: Metrics
+    if tab_metrics and section.metrics:
+        with tab_metrics:
+            st.markdown("### Calculated Metrics")
+            
+            # Display metrics in a nice format
+            metrics_df_data = []
+            for key, value in section.metrics.items():
+                label = key.replace('_', ' ').title()
+                metrics_df_data.append({
+                    'Metric': label,
+                    'Value': f"{value:,.2f}" if isinstance(value, (int, float)) else str(value),
+                    'Unit': 'tCO2e' if 'emission' in key.lower() or 'reduction' in key.lower() else '-'
+                })
+            
+            if metrics_df_data:
+                import pandas as pd
+                st.dataframe(pd.DataFrame(metrics_df_data), use_container_width=True)
     
     # Actions
     st.markdown("---")
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     
     with col1:
         if st.button("✓ Approve & Continue", type="primary", use_container_width=True):
@@ -342,17 +437,28 @@ def render_generation():
     
     with col2:
         if st.button("🔄 Regenerate", use_container_width=True):
-            section.values = {}  # Clear to regenerate
+            section.values = {}
+            section.narrative = ''
+            section.visual_elements = []
+            section.metrics = {}
             st.rerun()
     
     with col3:
+        mode = "Enhanced" if section.narrative else "Basic"
+        st.metric("Mode", mode)
+    
+    with col4:
         st.metric("Progress", f"{progress['approved']}/{progress['total']}")
     
     # Completed sections
     with st.expander(f"✓ Completed ({progress['approved']} sections)"):
+        total_words = sum(s.word_count for s in workflow.sections if s.approved)
+        st.caption(f"Total words so far: {total_words:,}")
+        
         for s in workflow.sections:
             if s.approved:
-                st.markdown(f"✓ {s.num} {s.title}")
+                word_info = f" ({s.word_count} words)" if s.word_count > 0 else ""
+                st.markdown(f"✓ {s.num} {s.title}{word_info}")
 
 
 def render_complete():
@@ -374,15 +480,41 @@ def render_complete():
     
     # Compile button
     if not st.session_state.get('pdd_document'):
-        if st.button("📝 Compile Document", type="primary", use_container_width=True):
-            with st.spinner("Compiling..."):
-                pdd = workflow.compile_pdd()
-                st.session_state.pdd_document = pdd
-                st.rerun()
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("📝 Compile Comprehensive PDD (50-70 pages)", type="primary", use_container_width=True):
+                with st.spinner("Compiling comprehensive 50-70 page PDD..."):
+                    pdd = workflow.compile_pdd(comprehensive=True)
+                    st.session_state.pdd_document = pdd
+                    st.session_state.pdd_comprehensive = True
+                    st.rerun()
+        
+        with col2:
+            if st.button("📄 Compile Basic PDD", use_container_width=True):
+                with st.spinner("Compiling basic PDD..."):
+                    pdd = workflow.compile_pdd(comprehensive=False)
+                    st.session_state.pdd_document = pdd
+                    st.session_state.pdd_comprehensive = False
+                    st.rerun()
     
     # Export options
     if st.session_state.get('pdd_document'):
         st.markdown("---")
+        
+        # Show document stats
+        is_comprehensive = st.session_state.get('pdd_comprehensive', False)
+        word_count = len(st.session_state.pdd_document.split())
+        page_estimate = word_count // 500
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Document Type", "Comprehensive" if is_comprehensive else "Basic")
+        with col2:
+            st.metric("Word Count", f"{word_count:,}")
+        with col3:
+            st.metric("Est. Pages", f"{page_estimate}")
+        
         st.markdown("### 📥 Export Your PDD")
         
         # Export format tabs
