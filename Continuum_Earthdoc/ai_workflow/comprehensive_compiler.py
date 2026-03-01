@@ -4,6 +4,7 @@ Generates professional 50-70 page PDDs with tables, charts, and rich content
 """
 
 import os
+import json
 from typing import Dict, List, Any
 from datetime import datetime
 from ai_workflow.enhanced_content_generator import VisualElement
@@ -21,7 +22,8 @@ class ComprehensivePDDCompiler:
         methodology_id: str,
         project_context: Dict[str, Any],
         sections: List[Any],  # List of PDDSection with enhanced content
-        include_appendices: bool = True
+        include_appendices: bool = True,
+        methodology_metadata: Dict[str, Any] = None,
     ) -> str:
         """
         Compile comprehensive PDD with:
@@ -38,11 +40,17 @@ class ComprehensivePDDCompiler:
         
         document_parts = []
         
+        methodology_metadata = methodology_metadata or {
+            "primary_methodology": methodology_id,
+            "additional_methodologies": [],
+            "combined_methodologies": [methodology_id],
+        }
+
         # 1. Cover Page (1 page)
-        document_parts.append(self._generate_cover_page(methodology_id, project_context))
+        document_parts.append(self._generate_cover_page(methodology_id, project_context, methodology_metadata))
         
         # 2. Document Control (1 page)
-        document_parts.append(self._generate_document_control(methodology_id, project_context))
+        document_parts.append(self._generate_document_control(methodology_id, project_context, methodology_metadata))
         
         # 3. Table of Contents (2 pages)
         document_parts.append(self._generate_toc(sections))
@@ -58,10 +66,10 @@ class ComprehensivePDDCompiler:
         
         # 7. Appendices (5-10 pages)
         if include_appendices:
-            document_parts.append(self._generate_appendices(sections, project_context))
+            document_parts.append(self._generate_appendices(sections, project_context, methodology_metadata))
         
         # 8. References (1-2 pages)
-        document_parts.append(self._generate_references(methodology_id))
+        document_parts.append(self._generate_references(methodology_id, methodology_metadata))
         
         # 9. Supporting Documents List (1 page)
         document_parts.append(self._generate_supporting_documents())
@@ -87,8 +95,45 @@ class ComprehensivePDDCompiler:
 """
         
         return full_document + stats
+
+    def compile_json(
+        self,
+        project_context: Dict[str, Any],
+        sections: List[Any],
+        selected_methodologies: Dict[str, Any],
+        project_intelligence: Dict[str, Any] = None,
+        merge_report: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """Compile JSON payload with multi-methodology metadata."""
+        project_intelligence = project_intelligence or {}
+        merge_report = merge_report or {}
+        output = {
+            "primary_methodology": selected_methodologies.get("primary_methodology"),
+            "additional_methodologies": selected_methodologies.get("additional_methodologies", []),
+            "combined_methodologies": selected_methodologies.get("combined", []),
+            "project_info": project_context,
+            "project_intelligence": project_intelligence,
+            "merge_report": merge_report,
+            "generated_date": datetime.now().isoformat(),
+            "sections": [],
+        }
+        for section in sections:
+            output["sections"].append(
+                {
+                    "number": getattr(section, "num", ""),
+                    "title": getattr(section, "title", ""),
+                    "fields": getattr(section, "values", {}),
+                    "narrative": getattr(section, "narrative", ""),
+                    "metrics": getattr(section, "metrics", {}),
+                    "provenance": getattr(section, "provenance", {}),
+                    "conflicts": getattr(section, "conflicts", []),
+                    "variants": getattr(section, "variants", {}),
+                    "placement": getattr(section, "placement", "main"),
+                }
+            )
+        return output
     
-    def _generate_cover_page(self, methodology_id: str, context: Dict) -> str:
+    def _generate_cover_page(self, methodology_id: str, context: Dict, methodology_metadata: Dict[str, Any]) -> str:
         """Generate professional cover page"""
         
         project_name = context.get('project_name', 'Carbon Reduction Project')
@@ -96,6 +141,10 @@ class ComprehensivePDDCompiler:
         country = location.get('country', 'Unknown')
         city = location.get('city', '')
         
+        additional = methodology_metadata.get("additional_methodologies", [])
+        combined = methodology_metadata.get("combined_methodologies", [methodology_id])
+        additional_text = ", ".join(additional) if additional else "None"
+
         return f"""# VERIFIED CARBON STANDARD
 ## PROJECT DESCRIPTION DOCUMENT
 
@@ -104,6 +153,8 @@ class ComprehensivePDDCompiler:
 ### {project_name}
 
 **Verra Methodology:** {methodology_id}
+**Additional Methodologies:** {additional_text}
+**Combined Methodology Set:** {", ".join(combined)}
 
 **Project Location:** {city + ', ' if city else ''}{country}
 
@@ -118,6 +169,7 @@ class ComprehensivePDDCompiler:
 **Prepared in accordance with:**
 - VCS Standard v4.5
 - {methodology_id} 
+- Additional methodologies: {additional_text}
 - VCS Project Description Template v4.2
 
 ---
@@ -127,8 +179,9 @@ class ComprehensivePDDCompiler:
 ---PAGE_BREAK---
 """
     
-    def _generate_document_control(self, methodology_id: str, context: Dict) -> str:
+    def _generate_document_control(self, methodology_id: str, context: Dict, methodology_metadata: Dict[str, Any]) -> str:
         """Generate document control page"""
+        combined_label = "_".join(methodology_metadata.get("combined_methodologies", [methodology_id]))
         
         return f"""## DOCUMENT CONTROL
 
@@ -157,7 +210,7 @@ class ComprehensivePDDCompiler:
 **Email:** contact@project.com  
 **Phone:** +1-XXX-XXX-XXXX
 
-**Document Reference:** {methodology_id}_PDD_{datetime.now().strftime('%Y%m%d')}_v1.0
+**Document Reference:** {combined_label}_PDD_{datetime.now().strftime('%Y%m%d')}_v1.0
 
 ---PAGE_BREAK---
 """
@@ -368,6 +421,8 @@ The project will be implemented in phases:
         for section in sections:
             if not section.approved:
                 continue
+            if getattr(section, "placement", "main") == "additional_appendix":
+                continue
             
             # Main section header
             main_num = section.num.split('.')[0] if '.' in section.num else section.num
@@ -377,6 +432,9 @@ The project will be implemented in phases:
             
             # Subsection
             content += f"### {section.num} {section.title}\n\n"
+            coverage = (getattr(section, "provenance", {}) or {}).get("source_methodologies", [])
+            if coverage:
+                content += f"*Methodology coverage: {', '.join(coverage)}*\n\n"
             
             # Add narrative content if available
             if hasattr(section, 'narrative') and section.narrative:
@@ -401,7 +459,7 @@ The project will be implemented in phases:
         
         return content
     
-    def _generate_appendices(self, sections: List, context: Dict) -> str:
+    def _generate_appendices(self, sections: List, context: Dict, methodology_metadata: Dict[str, Any]) -> str:
         """Generate comprehensive appendices"""
         
         appendices = """---PAGE_BREAK---
@@ -501,10 +559,35 @@ The following documents are available upon request:
 
 ---PAGE_BREAK---
 """
+        additional_only = [
+            s for s in sections
+            if getattr(s, "approved", False) and getattr(s, "placement", "main") == "additional_appendix"
+        ]
+        if additional_only:
+            appendices += "\n## Appendix F: Additional Methodology Requirements\n\n"
+            appendices += (
+                f"Primary methodology: {methodology_metadata.get('primary_methodology')}\n\n"
+                f"Additional methodologies: {', '.join(methodology_metadata.get('additional_methodologies', [])) or 'None'}\n\n"
+            )
+            for section in additional_only:
+                appendices += f"### {section.num} {section.title}\n\n"
+                coverage = (getattr(section, "provenance", {}) or {}).get("source_methodologies", [])
+                if coverage:
+                    appendices += f"*Source methodologies: {', '.join(coverage)}*\n\n"
+                if getattr(section, "narrative", ""):
+                    appendices += section.narrative + "\n\n"
+                if getattr(section, "values", {}):
+                    appendices += self._format_field_data(section.values) + "\n\n"
+                appendices += "---\n\n"
         return appendices
     
-    def _generate_references(self, methodology_id: str) -> str:
+    def _generate_references(self, methodology_id: str, methodology_metadata: Dict[str, Any]) -> str:
         """Generate references section"""
+        additional = methodology_metadata.get("additional_methodologies", [])
+        additional_lines = ""
+        if additional:
+            for idx, method in enumerate(additional, start=3):
+                additional_lines += f"{idx}. Verra. (2024). {method}. Verified Carbon Standard Program.\n\n"
         
         return f"""## REFERENCES
 
@@ -514,7 +597,7 @@ The following documents are available upon request:
 
 2. Verra. (2024). {methodology_id}. Verified Carbon Standard Program.
 
-3. Verra. (2024). VCS Project Description Template, v4.2.
+{additional_lines}3. Verra. (2024). VCS Project Description Template, v4.2.
 
 4. IPCC. (2019). 2019 Refinement to the 2006 IPCC Guidelines for National Greenhouse Gas Inventories.
 

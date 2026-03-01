@@ -6,8 +6,11 @@ Reduces hallucination, eliminates TBD fillings, generates 50-70 page PDDs
 
 import os
 import json
+import random
+import time
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
+from utils.perf import timer, increment_counter
 
 try:
     import google.generativeai as genai
@@ -63,7 +66,11 @@ class EnhancedContentGenerator:
         section_title: str,
         field_definitions: Dict[str, Dict],
         project_context: Dict[str, Any],
-        methodology_id: str
+        methodology_id: str,
+        selected_methodologies: Optional[Dict[str, Any]] = None,
+        section_provenance: Optional[Dict[str, Any]] = None,
+        section_variants: Optional[Dict[str, Any]] = None,
+        project_intelligence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate comprehensive section content with:
@@ -87,44 +94,220 @@ class EnhancedContentGenerator:
             'narrative': '',
             'visual_elements': [],
             'metrics': {},
-            'word_count': 0
+            'word_count': 0,
+            'needs_review': False
         }
         
         if not self.ai_enabled:
-            return self._fallback_generation(section_num, section_title, field_definitions, project_context)
+            with timer("enhanced.generate_section.fallback", extra={"section": section_num}):
+                return self._fallback_generation(
+                    section_num,
+                    section_title,
+                    field_definitions,
+                    project_context,
+                    selected_methodologies=selected_methodologies,
+                    section_provenance=section_provenance,
+                )
         
         try:
-            # Step 1: Generate detailed fields
-            result['fields'] = self._generate_enriched_fields(
-                section_num, section_title, field_definitions, project_context, methodology_id
-            )
-            
-            # Step 2: Generate comprehensive narrative
-            result['narrative'] = self._generate_narrative_content(
-                section_num, section_title, result['fields'], project_context, methodology_id
-            )
-            
-            # Step 3: Identify and generate visual elements
-            result['visual_elements'] = self._generate_visual_elements(
-                section_num, section_title, result['fields'], project_context
-            )
-            
-            # Step 4: Calculate metrics if applicable
-            if self._is_metrics_section(section_num):
-                result['metrics'] = self._calculate_metrics(
-                    section_num, result['fields'], project_context
+            with timer("enhanced.generate_section.total", extra={"section": section_num}):
+                # Primary fast path: single compact JSON call
+                bundle = self._generate_section_bundle_one_call(
+                    section_num=section_num,
+                    section_title=section_title,
+                    field_definitions=field_definitions,
+                    project_context=project_context,
+                    methodology_id=methodology_id,
+                    selected_methodologies=selected_methodologies,
+                    section_provenance=section_provenance,
+                    section_variants=section_variants,
+                    project_intelligence=project_intelligence,
                 )
-            
-            # Step 5: Validate and enhance
-            result = self._validate_and_enhance(result, section_num, project_context)
-            
-            result['word_count'] = len(result['narrative'].split())
+                if bundle:
+                    result["fields"] = bundle.get("fields", {}) or {}
+                    result["narrative"] = str(bundle.get("narrative", "") or "")
+                    result["metrics"] = bundle.get("metrics", {}) or {}
+                    result["visual_elements"] = self._coerce_visual_elements(bundle.get("visual_elements", []))
+                else:
+                    # Fallback path (legacy multi-call)
+                    result['fields'] = self._generate_enriched_fields(
+                        section_num,
+                        section_title,
+                        field_definitions,
+                        project_context,
+                        methodology_id,
+                        selected_methodologies=selected_methodologies,
+                        section_provenance=section_provenance,
+                        section_variants=section_variants,
+                        project_intelligence=project_intelligence,
+                    )
+                    result['narrative'] = self._generate_narrative_content(
+                        section_num,
+                        section_title,
+                        result['fields'],
+                        project_context,
+                        methodology_id,
+                        selected_methodologies=selected_methodologies,
+                        section_provenance=section_provenance,
+                        section_variants=section_variants,
+                        project_intelligence=project_intelligence,
+                    )
+                    result['visual_elements'] = self._generate_visual_elements(
+                        section_num, section_title, result['fields'], project_context
+                    )
+                    if self._is_metrics_section(section_num):
+                        result['metrics'] = self._calculate_metrics(section_num, result['fields'], project_context)
+
+                result = self._validate_and_enhance(result, section_num, project_context)
+                result['word_count'] = len(result['narrative'].split())
+            if section_variants and (
+                section_variants.get("field_variants") or section_variants.get("narrative_variants")
+            ):
+                result['needs_review'] = True
             
         except Exception as e:
             print(f"Enhanced generation failed: {e}, using fallback")
-            return self._fallback_generation(section_num, section_title, field_definitions, project_context)
+            return self._fallback_generation(
+                section_num,
+                section_title,
+                field_definitions,
+                project_context,
+                selected_methodologies=selected_methodologies,
+                section_provenance=section_provenance,
+            )
         
         return result
+
+    def build_compact_prompt(
+        self,
+        section_num: str,
+        section_title: str,
+        field_definitions: Dict[str, Dict],
+        project_context: Dict[str, Any],
+        methodology_id: str,
+        selected_methodologies: Optional[Dict[str, Any]] = None,
+        section_provenance: Optional[Dict[str, Any]] = None,
+        section_variants: Optional[Dict[str, Any]] = None,
+        project_intelligence: Optional[Dict[str, Any]] = None,
+        max_chars: int = 9000,
+    ) -> str:
+        """Build compact prompt to reduce latency and token usage."""
+        selected_methodologies = selected_methodologies or {}
+        section_provenance = section_provenance or {}
+        section_variants = section_variants or {}
+        project_intelligence = project_intelligence or {}
+
+        compact_context = {
+            "project_name": project_context.get("project_name"),
+            "project_type": project_context.get("project_type"),
+            "location": project_context.get("location"),
+            "scale": project_context.get("scale"),
+            "carbon_metrics": project_context.get("carbon_metrics"),
+            "technology": project_context.get("technology"),
+            "stakeholders": project_context.get("stakeholders"),
+        }
+        compact_intelligence = {
+            "summary": project_intelligence.get("summary"),
+            "sector": project_intelligence.get("sector"),
+            "project_type": project_intelligence.get("project_type"),
+            "mechanism": project_intelligence.get("mechanism"),
+            "ghg_sources": project_intelligence.get("ghg_sources", []),
+            "constraints": project_intelligence.get("constraints", []),
+            "assumptions": project_intelligence.get("assumptions", []),
+        }
+        compact_variants = {
+            "field_variants": section_variants.get("field_variants", {}),
+            "narrative_variants": section_variants.get("narrative_variants", {}),
+        }
+        schema = {
+            "section_num": section_num,
+            "section_title": section_title,
+            "fields": field_definitions,
+            "methodology": {
+                "primary": selected_methodologies.get("primary_methodology") or methodology_id,
+                "additional": selected_methodologies.get("additional_methodologies", []),
+                "coverage": section_provenance.get("source_methodologies", []),
+            },
+            "project_context": compact_context,
+            "project_intelligence": compact_intelligence,
+            "variants": compact_variants,
+            "output_schema": {
+                "fields": "object",
+                "narrative": "string",
+                "metrics": "object",
+                "visual_elements": "array of {type,title,description,data,placement}",
+                "needs_review": "boolean",
+                "assumptions": "array of strings",
+            },
+        }
+        prompt = (
+            "Return ONLY valid JSON for one PDD section. "
+            "Prioritize primary methodology phrasing and satisfy additional requirements where possible. "
+            "If conflict is unresolved, include needs_review=true and assumptions.\n"
+            f"{json.dumps(schema, ensure_ascii=True)}"
+        )
+        if len(prompt) > max_chars:
+            prompt = prompt[:max_chars]
+        return prompt
+
+    def _generate_section_bundle_one_call(
+        self,
+        section_num: str,
+        section_title: str,
+        field_definitions: Dict[str, Dict],
+        project_context: Dict[str, Any],
+        methodology_id: str,
+        selected_methodologies: Optional[Dict[str, Any]] = None,
+        section_provenance: Optional[Dict[str, Any]] = None,
+        section_variants: Optional[Dict[str, Any]] = None,
+        project_intelligence: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fast path: one LLM call for fields+narrative+metrics+visuals."""
+        prompt = self.build_compact_prompt(
+            section_num=section_num,
+            section_title=section_title,
+            field_definitions=field_definitions,
+            project_context=project_context,
+            methodology_id=methodology_id,
+            selected_methodologies=selected_methodologies,
+            section_provenance=section_provenance,
+            section_variants=section_variants,
+            project_intelligence=project_intelligence,
+        )
+        increment_counter("llm_calls", 1)
+        try:
+            response = self._call_model_with_retry(
+                prompt=prompt,
+                max_output_tokens=7000,
+                temperature=0.25,
+                op_name="enhanced.llm_bundle_call",
+            )
+            text = self._extract_json(getattr(response, "text", ""))
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                return None
+            return parsed
+        except Exception:
+            return None
+
+    def _coerce_visual_elements(self, raw_elements: Any) -> List[VisualElement]:
+        """Coerce JSON list into VisualElement objects."""
+        if not isinstance(raw_elements, list):
+            return []
+        visuals: List[VisualElement] = []
+        for item in raw_elements:
+            if not isinstance(item, dict):
+                continue
+            visuals.append(
+                VisualElement(
+                    type=str(item.get("type", "table")),
+                    title=str(item.get("title", "Visual Element")),
+                    description=str(item.get("description", "")),
+                    data=item.get("data", {}),
+                    placement=str(item.get("placement", "inline")),
+                )
+            )
+        return visuals
     
     def _generate_enriched_fields(
         self,
@@ -132,12 +315,20 @@ class EnhancedContentGenerator:
         section_title: str,
         field_defs: Dict,
         context: Dict,
-        methodology_id: str
+        methodology_id: str,
+        selected_methodologies: Optional[Dict[str, Any]] = None,
+        section_provenance: Optional[Dict[str, Any]] = None,
+        section_variants: Optional[Dict[str, Any]] = None,
+        project_intelligence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate field values with rich detail, avoiding TBD"""
         
         guidelines = self.methodology_guidelines.get(methodology_id, {})
         section_guidance = guidelines.get(section_num, '')
+        selected_methodologies = selected_methodologies or {}
+        section_provenance = section_provenance or {}
+        section_variants = section_variants or {}
+        project_intelligence = project_intelligence or {}
         
         prompt = f"""You are an expert carbon credit project developer writing a Verra VCS Project Description Document (PDD).
 
@@ -152,12 +343,23 @@ class EnhancedContentGenerator:
 **Section:** {section_num} - {section_title}
 
 **Methodology:** {methodology_id}
+**Methodology Coverage Metadata:** {json.dumps({
+    "primary_methodology": selected_methodologies.get("primary_methodology"),
+    "additional_methodologies": selected_methodologies.get("additional_methodologies", []),
+    "section_provenance": section_provenance,
+    "section_variants": section_variants,
+}, indent=2)}
 
 {f"**Methodology-Specific Guidance:**{section_guidance}" if section_guidance else ""}
 
 **Project Information:**
 ```json
 {json.dumps(context, indent=2)}
+```
+
+**Project Intelligence:**
+```json
+{json.dumps(project_intelligence, indent=2)}
 ```
 
 **Fields to Fill:**
@@ -169,10 +371,18 @@ class EnhancedContentGenerator:
 - For dates: Use realistic dates based on project timeline
 - For yes/no fields: Provide definitive answers with justification
 - Include specific examples, references to standards, and technical details
+- Prioritize primary methodology phrasing while satisfying additional methodology variant requirements
+- If requirements conflict, include an explicit assumption in the relevant field text
 
 Return ONLY a JSON object with field names as keys. Each value must be complete and specific."""
 
-        response = self.model.generate_content(prompt)
+        increment_counter("llm_calls", 1)
+        response = self._call_model_with_retry(
+            prompt=prompt,
+            max_output_tokens=2500,
+            temperature=0.25,
+            op_name="enhanced.llm_fields_call",
+        )
         text = self._extract_json(response.text)
         fields = json.loads(text)
         
@@ -187,9 +397,17 @@ Return ONLY a JSON object with field names as keys. Each value must be complete 
         section_title: str,
         fields: Dict,
         context: Dict,
-        methodology_id: str
+        methodology_id: str,
+        selected_methodologies: Optional[Dict[str, Any]] = None,
+        section_provenance: Optional[Dict[str, Any]] = None,
+        section_variants: Optional[Dict[str, Any]] = None,
+        project_intelligence: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Generate comprehensive narrative content (500-1500 words per section)"""
+        selected_methodologies = selected_methodologies or {}
+        section_provenance = section_provenance or {}
+        section_variants = section_variants or {}
+        project_intelligence = project_intelligence or {}
         
         prompt = f"""You are writing a comprehensive Verra VCS Project Description Document (PDD).
 
@@ -197,6 +415,12 @@ Return ONLY a JSON object with field names as keys. Each value must be complete 
 
 **Section:** {section_num} - {section_title}
 **Methodology:** {methodology_id}
+**Methodology Coverage Metadata:** {json.dumps({
+    "primary_methodology": selected_methodologies.get("primary_methodology"),
+    "additional_methodologies": selected_methodologies.get("additional_methodologies", []),
+    "section_provenance": section_provenance,
+    "section_variants": section_variants,
+}, indent=2)}
 
 **Project Context:**
 - Project: {context.get('project_name', 'Carbon Reduction Project')}
@@ -207,6 +431,11 @@ Return ONLY a JSON object with field names as keys. Each value must be complete 
 **Field Data:**
 ```json
 {json.dumps(fields, indent=2)}
+```
+
+**Project Intelligence:**
+```json
+{json.dumps(project_intelligence, indent=2)}
 ```
 
 **Requirements:**
@@ -223,6 +452,8 @@ Return ONLY a JSON object with field names as keys. Each value must be complete 
 5. Include specific numbers, dates, and technical specifications
 6. Explain calculations and methodologies used
 7. Address potential audit questions proactively
+8. Prioritize primary methodology language while covering additional methodology requirements from section variants
+9. If any conflict is impossible to resolve, add a concise "Assumption/Needs Review" line in narrative
 
 **Style Guidelines:**
 - Be specific and concrete (avoid vague statements)
@@ -233,7 +464,13 @@ Return ONLY a JSON object with field names as keys. Each value must be complete 
 
 Generate comprehensive narrative content now:"""
 
-        response = self.model.generate_content(prompt)
+        increment_counter("llm_calls", 1)
+        response = self._call_model_with_retry(
+            prompt=prompt,
+            max_output_tokens=5000,
+            temperature=0.3,
+            op_name="enhanced.llm_narrative_call",
+        )
         narrative = response.text.strip()
         
         # Clean up markdown artifacts
@@ -260,7 +497,13 @@ Generate comprehensive narrative content now:"""
         
         for prompt_type, prompt in prompts:
             try:
-                suggestion = self.model.generate_content(prompt)
+                increment_counter("llm_calls", 1)
+                suggestion = self._call_model_with_retry(
+                    prompt=prompt,
+                    max_output_tokens=1200,
+                    temperature=0.25,
+                    op_name=f"enhanced.llm_visual_{prompt_type}",
+                )
                 element_data = self._parse_visual_suggestion(suggestion.text, prompt_type)
                 
                 if element_data:
@@ -379,7 +622,13 @@ Calculate and provide:
 
 Return as JSON with detailed metrics."""
 
-            response = self.model.generate_content(prompt)
+            increment_counter("llm_calls", 1)
+            response = self._call_model_with_retry(
+                prompt=prompt,
+                max_output_tokens=2200,
+                temperature=0.25,
+                op_name="enhanced.llm_metrics_call",
+            )
             ai_metrics = self._extract_json(response.text)
             metrics.update(json.loads(ai_metrics))
         
@@ -387,6 +636,34 @@ Return as JSON with detailed metrics."""
             print(f"Metrics calculation error: {e}")
         
         return metrics
+
+    def _call_model_with_retry(
+        self,
+        prompt: str,
+        max_output_tokens: int,
+        temperature: float,
+        op_name: str,
+        max_retries: int = 2,
+    ):
+        prompt_chars = len(prompt)
+        for attempt in range(max_retries + 1):
+            try:
+                with timer(op_name, extra={"attempt": attempt + 1, "prompt_chars": prompt_chars, "model": "gemini-2.5-flash"}):
+                    response = self.model.generate_content(
+                        prompt,
+                        generation_config=genai.types.GenerationConfig(
+                            max_output_tokens=max_output_tokens,
+                            temperature=temperature
+                        )
+                    )
+                increment_counter("llm_response_chars", len(getattr(response, "text", "") or ""))
+                return response
+            except Exception:
+                if attempt >= max_retries:
+                    raise
+                wait_time = (2 ** attempt) + random.uniform(0, 0.5)
+                increment_counter("llm_retries", 1)
+                time.sleep(wait_time)
     
     def _validate_and_enhance(
         self,
@@ -526,14 +803,33 @@ Return as JSON with detailed metrics."""
         except:
             return None
     
-    def _fallback_generation(self, section_num, section_title, field_defs, context) -> Dict:
+    def _fallback_generation(
+        self,
+        section_num,
+        section_title,
+        field_defs,
+        context,
+        selected_methodologies: Optional[Dict[str, Any]] = None,
+        section_provenance: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
         """Fallback when AI is not available"""
+        selected_methodologies = selected_methodologies or {}
+        section_provenance = section_provenance or {}
+        coverage = section_provenance.get("source_methodologies") or [
+            selected_methodologies.get("primary_methodology")
+        ]
+        coverage = [c for c in coverage if c]
         return {
             'fields': self._rule_based_fields(field_defs, context),
-            'narrative': f"Comprehensive documentation for {section_title}. {context.get('original_description', '')}",
+            'narrative': (
+                f"Comprehensive documentation for {section_title}. "
+                f"Methodology coverage: {', '.join(coverage)}. "
+                f"{context.get('original_description', '')}"
+            ),
             'visual_elements': [],
             'metrics': {},
-            'word_count': 100
+            'word_count': 100,
+            'needs_review': False
         }
     
     def _rule_based_fields(self, field_defs: Dict, context: Dict) -> Dict:

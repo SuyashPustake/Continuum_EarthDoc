@@ -4,8 +4,10 @@ Supports Gemini 2.5 Flash (primary) and Claude (fallback)
 """
 
 import os
+import random
 from typing import Optional, Dict, Any, List
 from enum import Enum
+from utils.perf import timer, increment_counter
 
 
 class LLMProvider(Enum):
@@ -157,7 +159,7 @@ class LangChainService:
         else:
             return LLMChain(llm=llm, prompt=prompt_template, **kwargs)
     
-    def invoke_with_retry(self, chain, inputs: Dict[str, Any], max_retries: int = 3):
+    def invoke_with_retry(self, chain, inputs: Dict[str, Any], max_retries: int = 2):
         """
         Invoke chain with retry logic and fallback
         
@@ -173,11 +175,14 @@ class LangChainService:
         
         for attempt in range(max_retries):
             try:
-                result = chain.invoke(inputs)
+                increment_counter("langchain_calls", 1)
+                with timer("langchain.invoke", extra={"attempt": attempt + 1, "chain": type(chain).__name__}):
+                    result = chain.invoke(inputs)
                 return result
             except Exception as e:
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff
+                    wait_time = (2 ** attempt) + random.uniform(0, 0.5)  # Exponential backoff + jitter
+                    increment_counter("langchain_retries", 1)
                     print(f"⚠️ Chain invocation failed (attempt {attempt + 1}/{max_retries}): {e}")
                     print(f"   Retrying in {wait_time} seconds...")
                     time.sleep(wait_time)
@@ -190,4 +195,3 @@ class LangChainService:
                     raise Exception(f"Chain invocation failed after {max_retries} attempts: {e}")
         
         return None
-

@@ -6,6 +6,7 @@ Clean, simple, robust - no failures, minimal human interference
 import streamlit as st
 import os
 import json
+import time
 from datetime import datetime
 from io import BytesIO
 
@@ -17,7 +18,11 @@ except:
     pass
 
 from ai_workflow.pdd_workflow import PDDWorkflow
+from ai_workflow.template_merger import merge_methodology_templates
+from ai_workflow.methodology_corpus import get_methodology_cards
 from agents.pdd_agent import METHODOLOGY_DATABASE, METHODOLOGY_CATEGORIES
+from utils.perf import timer, render_perf_panel, get_counters
+from utils.ui_actions import should_execute_pending_action
 
 # Page config
 st.set_page_config(
@@ -33,6 +38,25 @@ def init():
         st.session_state.workflow = PDDWorkflow(os.environ.get('GOOGLE_API_KEY'))
     if 'step' not in st.session_state:
         st.session_state.step = 'input'  # input, methodology, generation, complete
+    if 'performance_debug' not in st.session_state:
+        st.session_state.performance_debug = False
+    if 'pending_action' not in st.session_state:
+        st.session_state.pending_action = None
+    if 'last_generate_latency_ms' not in st.session_state:
+        st.session_state.last_generate_latency_ms = None
+
+
+@st.cache_data(show_spinner=False)
+def cached_merge_plan(primary_methodology: str, additional_methodologies: tuple):
+    """Cache merged methodology plan."""
+    sections, merge_report = merge_methodology_templates(primary_methodology, list(additional_methodologies))
+    return {"sections": sections, "merge_report": merge_report}
+
+
+@st.cache_data(show_spinner=False)
+def cached_methodology_cards():
+    """Cache methodology cards for perf-sensitive recommendation workflows."""
+    return get_methodology_cards()
 
 
 def render_input():
@@ -86,10 +110,12 @@ Additional benefits include improved urban air quality, support for India's EV t
     # Button
     if st.button("🚀 Generate PDD", type="primary", use_container_width=True, disabled=word_count < 50):
         with st.spinner("Extracting project context..."):
-            result = st.session_state.workflow.set_description(description)
+            with timer("ui.click.generate_pdd"):
+                result = st.session_state.workflow.set_description(description)
             if result['success']:
                 # Get recommendations immediately
-                st.session_state.workflow.get_recommendations(3)
+                with timer("ui.click.get_recommendations"):
+                    st.session_state.workflow.get_recommendations(3)
                 st.session_state.step = 'methodology'
                 st.rerun()
 
@@ -185,7 +211,14 @@ def quick_select_methodology(method_id: str):
             title=METHODOLOGY_DATABASE[method_id]['title'],
             category=METHODOLOGY_DATABASE[method_id]['category'],
             confidence=100.0,
-            reasons=['Direct selection']
+            reasons=['Direct selection'],
+            final_score=1.0,
+            confidence_pct=100.0,
+            why_matches=['Direct user selection'],
+            eligibility_checks=[
+                {'check': 'Selection source', 'status': 'pass', 'note': 'Selected directly from browse UI'}
+            ],
+            assumptions=[]
         )
     ]
     st.session_state.step = 'methodology'
@@ -196,7 +229,7 @@ def render_methodology():
     """Step 2: Methodology recommendation and selection"""
     workflow = st.session_state.workflow
     
-    st.title("🎯 Select Methodology")
+    st.title("🎯 Select Methodologies")
     st.caption(f"Project: {workflow.context.get('project_name', 'Unknown')}")
     
     # Show extracted context briefly
@@ -209,47 +242,146 @@ def render_methodology():
             metrics = workflow.context.get('carbon_metrics', {})
             st.markdown(f"**Annual Reductions:** {metrics.get('annual_reductions', 'TBD')} tCO2e")
             st.markdown(f"**Scale:** {workflow.context.get('scale', 'Unknown')}")
-    
-    st.markdown("### Recommended Methodologies")
-    
-    # Show recommendations
-    for i, rec in enumerate(workflow.recommendations):
-        stars = "⭐" * min(5, int(rec.confidence / 20))
-        
-        with st.container():
-            col1, col2 = st.columns([4, 1])
-            
-            with col1:
-                st.markdown(f"#### {i+1}. {rec.methodology_id} - {rec.title}")
-                st.markdown(f"**Confidence:** {rec.confidence:.0f}% {stars} | **Category:** {rec.category}")
-                
-                if rec.reasons:
-                    st.markdown("**Why this matches:**")
-                    for reason in rec.reasons[:3]:
-                        st.markdown(f"- {reason}")
-            
-            with col2:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button(
-                    "Select",
-                    key=f"select_{rec.methodology_id}",
-                    type="primary" if i == 0 else "secondary",
-                    use_container_width=True
-                ):
-                    with st.spinner(f"Loading {rec.methodology_id}..."):
-                        result = workflow.select_methodology(rec.methodology_id)
-                        if result['success']:
-                            st.session_state.step = 'generation'
-                            st.rerun()
-                        else:
-                            st.error(f"Error: {result.get('error')}")
-            
+        pi = getattr(workflow, "project_intelligence", {}) or {}
+        if pi:
             st.markdown("---")
+            st.markdown("**Project Intelligence Summary**")
+            st.write(pi.get("summary", "No summary available"))
+            st.caption(
+                f"Sector: {pi.get('sector') or 'Unknown'} | "
+                f"Project Type: {pi.get('project_type') or 'Unknown'} | "
+                f"Mechanism: {pi.get('mechanism') or 'Unknown'}"
+            )
+    
+    st.markdown("### Recommendation Insights")
+    for i, rec in enumerate(workflow.recommendations):
+        stars = "⭐" * min(5, int((rec.confidence_pct or rec.confidence) / 20))
+        pct = rec.confidence_pct if rec.confidence_pct else rec.confidence
+        with st.expander(f"{i+1}. {rec.methodology_id} - {rec.title} ({pct:.0f}%) {stars}", expanded=(i == 0)):
+            st.markdown(f"**Category:** {rec.category}")
+            why_list = rec.why_matches if getattr(rec, "why_matches", None) else rec.reasons
+            if why_list:
+                st.markdown("**Why this matches:**")
+                for reason in why_list[:4]:
+                    st.markdown(f"- {reason}")
+            checks = getattr(rec, "eligibility_checks", []) or []
+            if checks:
+                st.markdown("**Eligibility checks:**")
+                for check in checks:
+                    status = check.get("status", "unknown")
+                    check_name = check.get("check", "Check")
+                    note = check.get("note", "")
+                    st.markdown(f"- `{status.upper()}` {check_name}: {note}")
+            assumptions = getattr(rec, "assumptions", []) or []
+            if assumptions:
+                st.markdown("**Assumptions:**")
+                for a in assumptions[:3]:
+                    st.markdown(f"- {a}")
+
+    st.markdown("---")
+    st.markdown("### Methodology Selection")
+
+    recommended_codes = [rec.methodology_id for rec in workflow.recommendations]
+    all_codes = list(METHODOLOGY_DATABASE.keys())
+    ordered_codes = []
+    for code in recommended_codes + all_codes:
+        if code not in ordered_codes:
+            ordered_codes.append(code)
+
+    current_primary = (
+        workflow.selected_methodologies.get("primary_methodology")
+        or (recommended_codes[0] if recommended_codes else ordered_codes[0])
+    )
+    primary = st.selectbox(
+        "Primary Methodology",
+        options=ordered_codes,
+        index=ordered_codes.index(current_primary) if current_primary in ordered_codes else 0,
+        format_func=lambda x: f"{x} - {METHODOLOGY_DATABASE.get(x, {}).get('title', x)}",
+        help="Primary methodology determines baseline wording and section ordering backbone.",
+    )
+    additional_options = [c for c in ordered_codes if c != primary]
+    default_additional = [
+        c for c in workflow.selected_methodologies.get("additional_methodologies", []) if c in additional_options
+    ]
+    additional = st.multiselect(
+        "Additional Methodologies",
+        options=additional_options,
+        default=default_additional,
+        format_func=lambda x: f"{x} - {METHODOLOGY_DATABASE.get(x, {}).get('title', x)}",
+        help="Additional methodologies add/merge requirements into one combined PDD.",
+    )
+
+    plan = cached_merge_plan(primary, tuple(additional))
+    merge_report = plan.get("merge_report", {})
+
+    with st.container():
+        st.markdown("### Combined Methodology Plan")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown(f"**Primary:** {primary}")
+            st.markdown(f"**Additional:** {', '.join(additional) if additional else 'None'}")
+            st.markdown(f"**Combined:** {', '.join(merge_report.get('combined_methodologies', []))}")
+        with col_b:
+            st.markdown(f"**Total Combined Sections:** {merge_report.get('total_sections', 0)}")
+            st.markdown(f"**Conflicts Detected:** {merge_report.get('conflicts_count', 0)}")
+            policy = merge_report.get("resolution_policy", {}).get("field_collision", "Deterministic primary-first merge")
+            st.markdown(f"**Conflict Policy:** {policy}")
+
+        if merge_report.get("conflicts"):
+            with st.expander("View Conflict Details"):
+                for conflict in merge_report["conflicts"][:20]:
+                    st.markdown(f"- `{conflict.get('type', 'conflict')}` {conflict.get('section_id', '')}: {conflict.get('policy', '')}")
+
+    if st.button("✅ Use Selected Methodologies", type="primary", use_container_width=True):
+        with st.spinner("Merging methodology templates and loading combined sections..."):
+            with timer("ui.click.select_methodologies"):
+                result = workflow.select_methodologies(primary, additional)
+            if result.get("success"):
+                st.session_state.step = 'generation'
+                st.rerun()
+            else:
+                st.error(f"Error: {result.get('error')}")
     
     # Back button
     if st.button("← Back"):
         st.session_state.step = 'input'
         st.rerun()
+
+
+def persist_current_section_from_ui(
+    workflow,
+    edited_values: dict,
+    edited_narrative: str,
+    approved_state: bool
+):
+    """
+    Persist current section UI edits before any navigation.
+    If approved content is edited, section is auto-unapproved.
+    """
+    if not workflow.sections:
+        return
+    workflow.go_to(workflow.current_section_idx)
+    section = workflow.sections[workflow.current_section_idx]
+
+    old_values = section.values or {}
+    old_narrative = section.narrative or ""
+
+    new_values = edited_values or {}
+    new_narrative = edited_narrative if edited_narrative is not None else old_narrative
+
+    values_changed = new_values != old_values
+    narrative_changed = new_narrative != old_narrative
+    changed = values_changed or narrative_changed
+
+    section.values = new_values
+    section.narrative = new_narrative
+    section.word_count = len((section.narrative or "").split())
+
+    if changed and section.approved:
+        section.approved = False
+        st.warning("This section was edited after approval and has been marked unapproved.")
+    else:
+        section.approved = bool(approved_state)
 
 
 def render_generation():
@@ -264,7 +396,8 @@ def render_generation():
         return
     
     st.title("📝 Review AI-Generated Content")
-    st.caption(f"{workflow.selected_methodology} | {workflow.context.get('project_name', 'Unknown')}")
+    combined_label = ", ".join(workflow.selected_methodologies.get("combined", [workflow.selected_methodology]))
+    st.caption(f"{combined_label} | {workflow.context.get('project_name', 'Unknown')}")
     
     # Progress bar
     st.progress(
@@ -273,13 +406,62 @@ def render_generation():
     )
     
     # Current section
+    workflow.go_to(workflow.current_section_idx)
     section = workflow.sections[workflow.current_section_idx]
+    section_id = f"{section.num}:{section.title}"
+
+    # Process pending actions (rerun-safe explicit execution)
+    pending = st.session_state.get("pending_action")
+    if should_execute_pending_action(pending, section_id, "generate_section"):
+            use_enhanced = bool(pending.get("use_enhanced", True))
+            with st.spinner(f"AI is generating {'Enhanced' if use_enhanced else 'Basic'} content for {section.num}..."):
+                start = time.perf_counter()
+                with timer("ui.generate_click.total", extra={"section": section.num, "use_enhanced": use_enhanced}):
+                    workflow.populate_current_section(use_enhanced=use_enhanced)
+                st.session_state.last_generate_latency_ms = round((time.perf_counter() - start) * 1000.0, 2)
+            st.session_state.pending_action = None
+            st.rerun()
+    elif should_execute_pending_action(pending, section_id, "regenerate_section"):
+            workflow.invalidate_current_section_cache(use_enhanced=None)
+            section.values = {}
+            section.narrative = ''
+            section.visual_elements = []
+            section.metrics = {}
+            section.word_count = 0
+            section.approved = False
+            st.session_state.pending_action = None
+            st.rerun()
+
+    # Navigation bar
+    st.markdown("### Section Navigation")
+    nav_col1, nav_col2, nav_col3, nav_col4 = st.columns([1, 2, 1, 1])
+    with nav_col1:
+        go_back_clicked = st.button("⬅ Go Back", disabled=not workflow.can_go_back(), use_container_width=True)
+    with nav_col2:
+        st.markdown(
+            f"<div style='padding-top:8px; text-align:center;'><b>Section {workflow.current_section_idx + 1} of {len(workflow.sections)}</b></div>",
+            unsafe_allow_html=True,
+        )
+    with nav_col3:
+        go_next_clicked = st.button("Next ➡", disabled=not workflow.can_go_next(), use_container_width=True)
+    with nav_col4:
+        jump_options = list(range(len(workflow.sections)))
+        jump_labels = [f"{i+1}. {workflow.sections[i].num} {workflow.sections[i].title}" for i in jump_options]
+        current_idx = workflow.current_section_idx
+        selected_label = st.selectbox(
+            "Jump to section",
+            options=jump_labels,
+            index=current_idx,
+            label_visibility="collapsed",
+            key="jump_to_section_select",
+        )
+        jump_target_idx = jump_labels.index(selected_label)
     
     # Enhanced mode toggle (initialize once)
     if 'use_enhanced' not in st.session_state:
         st.session_state.use_enhanced = True
     
-    # Populate if not yet done
+    # Populate only on explicit user action
     if not section.values:
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -289,14 +471,25 @@ def render_generation():
                 help="Enhanced mode generates comprehensive narrative, tables, charts, and calculated metrics. Basic mode only fills field values."
             )
         with col2:
-            pass  # Empty for spacing
-        
+            st.write("")
         mode_text = "Enhanced (comprehensive)" if st.session_state.use_enhanced else "Basic (fields only)"
-        with st.spinner(f"AI is generating {mode_text} content for {section.num}..."):
-            workflow.populate_current_section(use_enhanced=st.session_state.use_enhanced)
+        if st.button("Generate Content for This Section", type="primary", use_container_width=True):
+            st.session_state.pending_action = {
+                "action": "generate_section",
+                "section_id": section_id,
+                "use_enhanced": st.session_state.use_enhanced,
+            }
             st.rerun()
+        st.info("Content generation is manual. Use the button above to generate this section.")
+    if st.session_state.get("last_generate_latency_ms") is not None:
+        st.caption(f"Last generation latency: {st.session_state.last_generate_latency_ms} ms")
     
     st.markdown(f"## {section.num}: {section.title}")
+    coverage = (section.provenance or {}).get("source_methodologies", [])
+    if coverage:
+        st.caption(f"Methodology coverage: {', '.join(coverage)}")
+    if section.conflicts:
+        st.warning(f"{len(section.conflicts)} merge conflict(s) resolved for this section. Review assumptions if needed.")
     
     # Show content tabs
     if section.narrative or section.visual_elements or section.metrics:
@@ -307,6 +500,13 @@ def render_generation():
         tab_fields = st.tabs(tabs)[0]
         tab_narrative = tab_visual = tab_metrics = None
     
+    edited_narrative = section.narrative
+    section_approved_checkbox = st.checkbox(
+        "Section approved",
+        value=section.approved,
+        key=f"approved_{workflow.current_section_idx}"
+    )
+
     # Tab 1: Fields
     with tab_fields:
         st.info(f"✨ AI has pre-filled {len(section.fields)} fields. Review and edit as needed.")
@@ -370,10 +570,6 @@ def render_generation():
                 height=400,
                 key=f"narrative_{workflow.current_section_idx}"
             )
-            
-            if edited_narrative != section.narrative:
-                section.narrative = edited_narrative
-                section.word_count = len(edited_narrative.split())
     
     # Tab 3: Visual Elements
     if tab_visual and section.visual_elements:
@@ -426,21 +622,36 @@ def render_generation():
                 import pandas as pd
                 st.dataframe(pd.DataFrame(metrics_df_data), use_container_width=True)
     
+    # Persist and navigate from nav bar actions
+    if jump_target_idx != workflow.current_section_idx:
+        persist_current_section_from_ui(workflow, edited_values, edited_narrative, section_approved_checkbox)
+        workflow.go_to(jump_target_idx)
+        st.rerun()
+    if go_back_clicked:
+        persist_current_section_from_ui(workflow, edited_values, edited_narrative, section_approved_checkbox)
+        workflow.go_back()
+        st.rerun()
+    if go_next_clicked:
+        persist_current_section_from_ui(workflow, edited_values, edited_narrative, section_approved_checkbox)
+        workflow.go_next()
+        st.rerun()
+
     # Actions
     st.markdown("---")
     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     
     with col1:
         if st.button("✓ Approve & Continue", type="primary", use_container_width=True):
-            workflow.approve_section(edited_values)
+            persist_current_section_from_ui(workflow, edited_values, edited_narrative, True)
+            workflow.approve_section()
             st.rerun()
     
     with col2:
         if st.button("🔄 Regenerate", use_container_width=True):
-            section.values = {}
-            section.narrative = ''
-            section.visual_elements = []
-            section.metrics = {}
+            st.session_state.pending_action = {
+                "action": "regenerate_section",
+                "section_id": section_id,
+            }
             st.rerun()
     
     with col3:
@@ -471,10 +682,11 @@ def render_complete():
     progress = workflow.get_progress()
     
     col1, col2, col3 = st.columns(3)
+    combined_label = ", ".join(workflow.selected_methodologies.get("combined", [workflow.selected_methodology]))
     with col1:
         st.metric("Sections", f"{progress['approved']}/{progress['total']}")
     with col2:
-        st.metric("Methodology", workflow.selected_methodology)
+        st.metric("Methodologies", combined_label if combined_label else "N/A")
     with col3:
         st.metric("Fields Filled", len([f for s in workflow.sections for f in s.values]))
     
@@ -527,7 +739,7 @@ def render_complete():
             st.download_button(
                 "⬇ Download Markdown (.md)",
                 st.session_state.pdd_document,
-                file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.md",
+                file_name=f"PDD_{'_'.join(workflow.selected_methodologies.get('combined', [workflow.selected_methodology]))}_{datetime.now().strftime('%Y%m%d')}.md",
                 mime="text/markdown",
                 use_container_width=True
             )
@@ -545,15 +757,16 @@ def render_complete():
                         from utils.docx_converter import MarkdownToDOCXConverter
                         
                         converter = MarkdownToDOCXConverter()
-                        docx_bytes = converter.convert(
-                            st.session_state.pdd_document,
-                            title=f"{workflow.context.get('project_name', 'Project')} - PDD"
-                        )
+                        with timer("ui.export.docx"):
+                            docx_bytes = converter.convert(
+                                st.session_state.pdd_document,
+                                title=f"{workflow.context.get('project_name', 'Project')} - PDD"
+                            )
                         
                         st.download_button(
                             "⬇ Download Word Document (.docx)",
                             docx_bytes,
-                            file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.docx",
+                            file_name=f"PDD_{'_'.join(workflow.selected_methodologies.get('combined', [workflow.selected_methodology]))}_{datetime.now().strftime('%Y%m%d')}.docx",
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                             use_container_width=True
                         )
@@ -566,29 +779,14 @@ def render_complete():
             st.markdown("#### JSON Export")
             st.info("Structured data format for integration and processing")
             
-            # Compile JSON
-            json_data = {
-                'methodology': workflow.selected_methodology,
-                'methodology_title': METHODOLOGY_DATABASE.get(workflow.selected_methodology, {}).get('title', ''),
-                'project_info': workflow.context,
-                'generated_date': datetime.now().isoformat(),
-                'sections': []
-            }
-            
-            for section in workflow.sections:
-                if section.approved:
-                    json_data['sections'].append({
-                        'number': section.num,
-                        'title': section.title,
-                        'fields': section.values
-                    })
+            json_data = workflow.export_json(approved_only=True)
             
             json_str = json.dumps(json_data, indent=2)
             
             st.download_button(
                 "⬇ Download JSON",
                 json_str,
-                file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.json",
+                file_name=f"PDD_{'_'.join(workflow.selected_methodologies.get('combined', [workflow.selected_methodology]))}_{datetime.now().strftime('%Y%m%d')}.json",
                 mime="application/json",
                 use_container_width=True
             )
@@ -608,7 +806,7 @@ def render_complete():
                         
                         # Create temp agent with workflow data
                         temp_agent = PDDAgent(os.environ.get('GOOGLE_API_KEY'))
-                        temp_agent.select_methodology(workflow.selected_methodology)
+                        temp_agent.select_methodology(workflow.selected_methodologies.get("primary_methodology") or workflow.selected_methodology)
                         
                         # Populate with workflow data
                         for section in workflow.sections:
@@ -617,12 +815,13 @@ def render_complete():
                                 for field_name, field_value in section.values.items():
                                     temp_agent.project_data[field_name] = field_value
                         
-                        excel_bytes = ExcelTemplateGenerator.generate_filled_template(temp_agent)
+                        with timer("ui.export.excel"):
+                            excel_bytes = ExcelTemplateGenerator.generate_filled_template(temp_agent)
                         
                         st.download_button(
                             "⬇ Download Excel (.xlsx)",
                             excel_bytes,
-                            file_name=f"PDD_{workflow.selected_methodology}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            file_name=f"PDD_{'_'.join(workflow.selected_methodologies.get('combined', [workflow.selected_methodology]))}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
@@ -659,11 +858,13 @@ def render_sidebar():
         
         # Show progress if methodology selected
         if workflow.selected_methodology:
-            st.markdown("#### Selected Methodology")
-            method_info = METHODOLOGY_DATABASE.get(workflow.selected_methodology, {})
-            st.markdown(f"**{workflow.selected_methodology}**")
+            st.markdown("#### Selected Methodologies")
+            primary = workflow.selected_methodologies.get("primary_methodology") or workflow.selected_methodology
+            additional = workflow.selected_methodologies.get("additional_methodologies", [])
+            method_info = METHODOLOGY_DATABASE.get(primary, {})
+            st.markdown(f"**Primary:** {primary}")
             st.caption(method_info.get('title', '')[:50] + "...")
-            st.caption(f"Category: {method_info.get('category', 'Unknown')}")
+            st.caption(f"Additional: {', '.join(additional) if additional else 'None'}")
             
             st.markdown("---")
             
@@ -689,7 +890,7 @@ def render_sidebar():
             # Actions
             st.markdown("#### Actions")
             
-            if st.button("🔄 Change Methodology", use_container_width=True):
+            if st.button("🔄 Change Methodologies", use_container_width=True):
                 st.session_state.workflow = PDDWorkflow(os.environ.get('GOOGLE_API_KEY'))
                 st.session_state.step = 'input'
                 st.rerun()
@@ -716,6 +917,12 @@ def render_sidebar():
         st.markdown("---")
         st.caption("Version 2.0 | AI-Powered Workflow")
         st.caption("Supports 10 Verra Methodologies")
+        st.caption(f"Methodology cards cached: {len(cached_methodology_cards())}")
+        st.session_state.performance_debug = st.checkbox("Performance Debug", value=st.session_state.performance_debug)
+        if st.session_state.performance_debug:
+            counters = get_counters()
+            st.caption(f"LLM calls: {counters.get('llm_calls', 0)} | Retries: {counters.get('llm_retries', 0)}")
+            render_perf_panel()
 
 
 def render_excel_tools():
